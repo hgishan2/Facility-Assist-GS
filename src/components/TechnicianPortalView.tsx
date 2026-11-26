@@ -440,8 +440,8 @@ export const TechnicianPortalView: React.FC<TechnicianPortalViewProps> = ({
             </div>
           ) : (
             <div className="grid lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-200 dark:divide-slate-800">
-              <div className="lg:col-span-7 p-4 space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
+              <div className="lg:col-span-7 min-w-0 p-4 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     Recent Active Days (vs {STANDARD_DAILY_DUTY_HOURS}h Duty)
                   </h3>
@@ -490,7 +490,7 @@ export const TechnicianPortalView: React.FC<TechnicianPortalViewProps> = ({
                 )}
               </div>
 
-              <div className="lg:col-span-5 p-4 space-y-3">
+              <div className="lg:col-span-5 min-w-0 p-4 space-y-3">
                 <div>
                   <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     Top Work Categories
@@ -657,9 +657,9 @@ export const TechnicianPortalView: React.FC<TechnicianPortalViewProps> = ({
 
       {/* My Submissions & Automatic Status Updates */}
       <div className="grid lg:grid-cols-12 gap-6 items-start">
-        <section className="lg:col-span-8 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+        <section className="lg:col-span-8 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-            <div>
+            <div className="min-w-0">
               <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                 My Submissions &amp; Approval Status
               </h2>
@@ -690,7 +690,7 @@ export const TechnicianPortalView: React.FC<TechnicianPortalViewProps> = ({
                   key={log.id}
                   type="button"
                   onClick={() => onSelectLog(log)}
-                  className="w-full text-left px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors flex items-center justify-between gap-4"
+                  className="w-full text-left px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 sm:gap-4"
                 >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
@@ -742,7 +742,7 @@ export const TechnicianPortalView: React.FC<TechnicianPortalViewProps> = ({
         </section>
 
         {/* Assigned Buildings Directory */}
-        <section className="lg:col-span-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+        <section className="lg:col-span-4 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800">
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
               Assigned Buildings

@@ -470,9 +470,9 @@ export const SupervisorDashboardView: React.FC<SupervisorDashboardViewProps> = (
 
       {/* Main Split: Approval Queue + Building Summary */}
       <div className="grid lg:grid-cols-12 gap-6 items-start">
-        <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-            <div>
+        <section className="lg:col-span-7 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
               <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                 Supervisor Review Queue
               </h2>
@@ -530,9 +530,9 @@ export const SupervisorDashboardView: React.FC<SupervisorDashboardViewProps> = (
           )}
         </section>
 
-        <section className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-            <div>
+        <section className="lg:col-span-5 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
               <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                 Portfolio Breakdown
               </h2>

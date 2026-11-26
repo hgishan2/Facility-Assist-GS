@@ -36,6 +36,7 @@ import {
   ENTRY_TYPE_LABELS,
   EntryType,
   MaintenanceLog,
+  MaintenanceNotification,
   OvertimeLog,
   Technician,
   TenantSchedule,
@@ -55,6 +56,7 @@ interface ExcelHubViewProps {
   utilityMeters: UtilityMeter[];
   utilityReadings: UtilityReading[];
   tenantSchedules: TenantSchedule[];
+  notifications?: MaintenanceNotification[];
   user: { uid: string; name: string; email: string; role?: UserRole };
   googleBackup: UseGoogleSheetsAutoBackupReturn;
   onImportComplete: (summary: BulkImportResult) => void;
@@ -79,6 +81,7 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
   utilityMeters,
   utilityReadings,
   tenantSchedules,
+  notifications = [],
   user,
   googleBackup,
   onImportComplete,
@@ -240,22 +243,27 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
   const importContext = {
     existingBuildings: buildings,
     existingTechnicians: technicians,
+    existingAssets: assets,
+    existingLogs: logs,
     existingWorkLogs: workLogs,
     existingOvertimeLogs: overtimeLogs,
     existingMeters: utilityMeters,
     existingReadings: utilityReadings,
     existingSchedules: tenantSchedules,
+    existingNotifications: notifications,
   };
 
   const previewTotalRecords = preview
     ? preview.buildingsToCreate.length +
       preview.techniciansToCreate.length +
+      preview.assetsToCreate.length +
       preview.logsToCreate.length +
       preview.workLogsToCreate.length +
       preview.overtimeToCreate.length +
       preview.metersToCreate.length +
       preview.readingsToCreate.length +
-      preview.schedulesToCreate.length
+      preview.schedulesToCreate.length +
+      preview.notificationsToCreate.length
     : 0;
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -273,12 +281,15 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
       setPreview({
         buildingsToCreate: [],
         techniciansToCreate: [],
+        assetsToCreate: [],
         logsToCreate: [],
         workLogsToCreate: [],
         overtimeToCreate: [],
         metersToCreate: [],
         readingsToCreate: [],
         schedulesToCreate: [],
+        notificationsToCreate: [],
+        updateCount: 0,
         skippedDuplicates: 0,
         ignoredItems: [],
         errors: [err instanceof Error ? err.message : 'Unable to parse uploaded file(s).'],
@@ -300,12 +311,15 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
       setPreview({
         buildingsToCreate: [],
         techniciansToCreate: [],
+        assetsToCreate: [],
         logsToCreate: [],
         workLogsToCreate: [],
         overtimeToCreate: [],
         metersToCreate: [],
         readingsToCreate: [],
         schedulesToCreate: [],
+        notificationsToCreate: [],
+        updateCount: 0,
         skippedDuplicates: 0,
         ignoredItems: [],
         errors: [err instanceof Error ? err.message : 'Unable to load GST1 dataset.'],
@@ -326,12 +340,14 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
         {
           buildingsToCreate: preview.buildingsToCreate,
           techniciansToCreate: preview.techniciansToCreate,
+          assetsToCreate: preview.assetsToCreate,
           logsToCreate: preview.logsToCreate,
           workLogsToCreate: preview.workLogsToCreate,
           overtimeToCreate: preview.overtimeToCreate,
           metersToCreate: preview.metersToCreate,
           readingsToCreate: preview.readingsToCreate,
           schedulesToCreate: preview.schedulesToCreate,
+          notificationsToCreate: preview.notificationsToCreate,
         },
         {
           uid: user.uid,
@@ -340,26 +356,32 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
           role: user.role,
           existingBuildings: buildings,
           technicians,
+          existingAssets: assets,
+          existingLogs: logs,
           existingMeters: utilityMeters,
           existingWorkLogs: workLogs,
           existingOvertimeLogs: overtimeLogs,
           existingReadings: utilityReadings,
           existingSchedules: tenantSchedules,
+          existingNotifications: notifications,
           onProgress: (label) => setImportProgress(label),
         }
       );
       const parts: string[] = [];
-      if (res.createdBuildings) parts.push(`${res.createdBuildings} building(s)`);
-      if (res.createdTechnicians) parts.push(`${res.createdTechnicians} technician(s)`);
-      if (res.createdMeters) parts.push(`${res.createdMeters} meter(s)`);
-      if (res.createdWorkLogs) parts.push(`${res.createdWorkLogs} work log(s)`);
-      if (res.createdOvertime) parts.push(`${res.createdOvertime} overtime log(s)`);
-      if (res.createdReadings) parts.push(`${res.createdReadings} reading(s)`);
-      if (res.createdSchedules) parts.push(`${res.createdSchedules} schedule(s)`);
-      if (res.createdLogs) parts.push(`${res.createdLogs} maintenance/PPM log(s)`);
-      const summaryText = parts.length > 0 ? parts.join(', ') : '0 new records (already synced)';
+      if (res.createdBuildings) parts.push(`${res.createdBuildings} new building(s)`);
+      if (res.createdTechnicians) parts.push(`${res.createdTechnicians} new team member(s)`);
+      if (res.createdAssets) parts.push(`${res.createdAssets} new asset(s)`);
+      if (res.createdMeters) parts.push(`${res.createdMeters} new meter(s)`);
+      if (res.createdWorkLogs) parts.push(`${res.createdWorkLogs} new work log(s)`);
+      if (res.createdOvertime) parts.push(`${res.createdOvertime} new overtime log(s)`);
+      if (res.createdReadings) parts.push(`${res.createdReadings} new reading(s)`);
+      if (res.createdSchedules) parts.push(`${res.createdSchedules} new schedule(s)`);
+      if (res.createdLogs) parts.push(`${res.createdLogs} new maintenance/PPM log(s)`);
+      if (res.createdNotifications) parts.push(`${res.createdNotifications} new urgent alert(s)`);
+      if (res.updatedCount) parts.push(`${res.updatedCount} updated record(s)`);
+      const summaryText = parts.length > 0 ? parts.join(', ') : '0 changes (already in sync)';
       setImportBanner(
-        `Imported ${summaryText} into Firestore.${res.skippedDuplicates > 0 ? ` (${res.skippedDuplicates} existing duplicates skipped.)` : ''}`
+        `Synced ${summaryText} in Firestore.${res.skippedDuplicates > 0 ? ` (${res.skippedDuplicates} unchanged rows skipped.)` : ''}`
       );
       setPreview(null);
       onImportComplete(res);
@@ -540,7 +562,7 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
           </div>
         ) : (
           <div className="grid lg:grid-cols-2 gap-4">
-            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 flex flex-col justify-between gap-3">
+            <div className="min-w-0 p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 flex flex-col justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                   Option A: Create New Auto-Backup Sheet
@@ -565,7 +587,7 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
               </div>
             </div>
 
-            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 flex flex-col justify-between gap-3">
+            <div className="min-w-0 p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 flex flex-col justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                   Option B: Link Existing Google Spreadsheet
@@ -580,7 +602,7 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
                   value={sheetLinkInput}
                   onChange={(e) => setSheetLinkInput(e.target.value)}
                   placeholder="https://docs.google.com/spreadsheets/d/..."
-                  className="flex-1 min-w-[200px] px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  className="flex-1 min-w-0 sm:min-w-[200px] w-full sm:w-auto px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-600"
                 />
                 <button
                   type="button"
@@ -758,7 +780,7 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
 
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         {/* Card 1: Facility Manager Excel Summary Export */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
+        <section className="min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-lg bg-brand-50 dark:bg-brand-950/60 border border-brand-200 dark:border-brand-800 flex items-center justify-center text-brand-700 dark:text-brand-400 shrink-0">
               <FileSpreadsheet className="w-5 h-5" />
@@ -835,7 +857,7 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
             <div className="flex items-center gap-3">
               <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Include:</label>
               <select
@@ -860,24 +882,37 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
           </div>
         </section>
 
-        {/* Card 2: Template Download & Bulk Database Populate */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
+        {/* Card 2: Master Data Template Download & Bulk Edit / Upload */}
+        <section className="min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
               <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                Template Download &amp; Bulk Upload
+                Master Data Template &amp; Bulk Upload
               </h3>
               <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
-                Download the pre-configured template containing your active building codes, fill in historical or batch logs, and upload to populate Firestore automatically.
+                Download the complete 11-tab workbook pre-filled with all current records across all 10 app modules. Edit any fields or add new rows (leave ID blank for new records), then re-upload to sync updates and additions.
               </p>
             </div>
             <button
               type="button"
-              onClick={() => downloadImportTemplate(buildings, technicians)}
+              onClick={() =>
+                downloadImportTemplate({
+                  buildings,
+                  technicians,
+                  assets,
+                  utilityMeters,
+                  logs,
+                  workLogs,
+                  overtimeLogs,
+                  utilityReadings,
+                  tenantSchedules,
+                  notifications,
+                })
+              }
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap shrink-0"
             >
               <Download className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
-              Download Template
+              Download Full Template
             </button>
           </div>
 
@@ -948,28 +983,33 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-semibold text-slate-900 dark:text-slate-100 truncate">{fileName}</span>
                 <span className="font-mono tabular-nums font-medium text-brand-700 dark:text-brand-400">
-                  {previewTotalRecords.toLocaleString()} ready to import
-                  {preview.skippedDuplicates > 0 ? ` · ${preview.skippedDuplicates} duplicates skipped` : ''}
+                  {previewTotalRecords.toLocaleString()} change(s) ready
+                  {preview.updateCount > 0
+                    ? ` (${preview.updateCount.toLocaleString()} updates, ${(previewTotalRecords - preview.updateCount).toLocaleString()} new)`
+                    : ''}
+                  {preview.skippedDuplicates > 0 ? ` · ${preview.skippedDuplicates} unchanged skipped` : ''}
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
                 {[
                   { label: 'Buildings', count: preview.buildingsToCreate.length },
-                  { label: 'Technicians', count: preview.techniciansToCreate.length },
+                  { label: 'Team Roster', count: preview.techniciansToCreate.length },
+                  { label: 'Assets & QR', count: preview.assetsToCreate.length },
+                  { label: 'Utility Meters', count: preview.metersToCreate.length },
+                  { label: 'PPM / Repairs', count: preview.logsToCreate.length },
                   { label: 'Work Logs', count: preview.workLogsToCreate.length },
                   { label: 'Overtime', count: preview.overtimeToCreate.length },
-                  { label: 'Utility Meters', count: preview.metersToCreate.length },
                   { label: 'Meter Readings', count: preview.readingsToCreate.length },
-                  { label: 'Tenant Schedules', count: preview.schedulesToCreate.length },
-                  { label: 'PPM / Repairs', count: preview.logsToCreate.length },
+                  { label: 'Schedules', count: preview.schedulesToCreate.length },
+                  { label: 'Urgent Alerts', count: preview.notificationsToCreate.length },
                 ].map((stat) => (
                   <div
                     key={stat.label}
-                    className="px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex items-center justify-between"
+                    className="px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex items-center justify-between gap-1.5"
                   >
-                    <span className="text-slate-600 dark:text-slate-400">{stat.label}</span>
-                    <span className="font-mono font-semibold text-slate-900 dark:text-slate-100 tabular-nums">
+                    <span className="text-slate-600 dark:text-slate-400 truncate">{stat.label}</span>
+                    <span className="font-mono font-semibold text-slate-900 dark:text-slate-100 tabular-nums shrink-0">
                       {stat.count.toLocaleString()}
                     </span>
                   </div>

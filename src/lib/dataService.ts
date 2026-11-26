@@ -38,9 +38,11 @@ import {
 } from './operationsAnalytics';
 import { sanitizeTagSlug } from './qrUtils';
 import type {
+  ParsedAssetRow,
   ParsedBuildingRow,
   ParsedLogRow,
   ParsedMeterRow,
+  ParsedNotificationRow,
   ParsedOvertimeRow,
   ParsedReadingRow,
   ParsedScheduleRow,
@@ -1175,12 +1177,15 @@ export async function flushOfflineQueue(ctx: {
 export interface BulkImportResult {
   createdBuildings: number;
   createdTechnicians: number;
+  createdAssets: number;
   createdLogs: number;
   createdWorkLogs: number;
   createdOvertime: number;
   createdMeters: number;
   createdReadings: number;
   createdSchedules: number;
+  createdNotifications: number;
+  updatedCount: number;
   skippedDuplicates: number;
 }
 
@@ -1188,12 +1193,14 @@ export async function bulkImportWorkbookData(
   params: {
     buildingsToCreate: ParsedBuildingRow[];
     techniciansToCreate?: ParsedTechnicianRow[];
+    assetsToCreate?: ParsedAssetRow[];
     logsToCreate: ParsedLogRow[];
     workLogsToCreate?: ParsedWorkLogRow[];
     overtimeToCreate?: ParsedOvertimeRow[];
     metersToCreate?: ParsedMeterRow[];
     readingsToCreate?: ParsedReadingRow[];
     schedulesToCreate?: ParsedScheduleRow[];
+    notificationsToCreate?: ParsedNotificationRow[];
   },
   ctx: {
     uid: string;
@@ -1202,56 +1209,98 @@ export async function bulkImportWorkbookData(
     role?: UserRole;
     existingBuildings: Building[];
     technicians: Technician[];
+    existingAssets?: Asset[];
+    existingLogs?: MaintenanceLog[];
     existingMeters?: UtilityMeter[];
     existingWorkLogs?: WorkLog[];
     existingOvertimeLogs?: OvertimeLog[];
     existingReadings?: UtilityReading[];
     existingSchedules?: TenantSchedule[];
+    existingNotifications?: MaintenanceNotification[];
     onProgress?: (label: string, completed: number, total: number) => void;
   }
 ): Promise<BulkImportResult> {
   const cleanEmail = normalizeEmail(ctx.email);
+  const isAdminCaller = ctx.role === 'admin' || cleanEmail === ADMIN_AUTH_EMAIL;
   const actorName = clampStr(ctx.name || cleanEmail.split('@')[0] || 'Supervisor', MAX_LENGTHS.techName);
   const supervisorEmails = buildBuildingSupervisorEmails(cleanEmail);
 
   const buildingMap = new Map<string, Building>();
+  const buildingById = new Map<string, Building>();
   for (const b of ctx.existingBuildings) {
     buildingMap.set(b.code.trim().toUpperCase(), b);
+    buildingById.set(b.id, b);
   }
 
   let createdBuildings = 0;
   let createdTechnicians = 0;
+  let createdAssets = 0;
   let createdLogs = 0;
   let createdWorkLogs = 0;
   let createdOvertime = 0;
   let createdMeters = 0;
   let createdReadings = 0;
   let createdSchedules = 0;
+  let createdNotifications = 0;
+  let updatedCount = 0;
   let skippedDuplicates = 0;
 
   const techRows = params.techniciansToCreate || [];
+  const assetRows = params.assetsToCreate || [];
   const workRows = params.workLogsToCreate || [];
   const otRows = params.overtimeToCreate || [];
   const meterRows = params.metersToCreate || [];
   const readingRows = params.readingsToCreate || [];
   const scheduleRows = params.schedulesToCreate || [];
+  const notifRows = params.notificationsToCreate || [];
 
-  const existingTechByBadge = new Set(
-    ctx.technicians.map((t) => t.badgeId.trim().toUpperCase()).filter(Boolean)
-  );
+  const existingTechById = new Map<string, Technician>();
+  const existingTechByBadge = new Map<string, Technician>();
   const existingTechByName = new Map<string, Technician>();
   for (const t of ctx.technicians) {
+    existingTechById.set(t.id, t);
+    if (t.badgeId) existingTechByBadge.set(t.badgeId.trim().toUpperCase(), t);
     existingTechByName.set(t.name.trim().toLowerCase(), t);
   }
 
-  // Pre-assign IDs for new buildings so new technicians can reference them immediately
+  // Stage 1 prep: Buildings (create & update)
   const pendingBuildings: Building[] = [];
+  const updatedBuildingsMap = new Map<string, Building>();
+  const touchedExistingBuildingIds = new Set<string>();
+
   for (const row of params.buildingsToCreate) {
     const code = clampStr(row.code, MAX_LENGTHS.buildingCode).toUpperCase();
-    if (!code || buildingMap.has(code)) {
-      skippedDuplicates += 1;
+    if (!code) continue;
+    const existingB = (row.id ? buildingById.get(row.id) : undefined) || buildingMap.get(code);
+
+    if (existingB) {
+      const canEdit =
+        isAdminCaller || existingB.supervisorEmails.map(normalizeEmail).includes(cleanEmail);
+      if (!canEdit) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      if (row.action === 'update') {
+        const nextB: Building = {
+          ...existingB,
+          code,
+          name: clampStr(row.name || existingB.name, MAX_LENGTHS.buildingName),
+          address: clampStr(row.address, MAX_LENGTHS.address),
+          floorsCount: Math.max(1, Math.min(200, Math.round(Number(row.floorsCount) || existingB.floorsCount || 1))),
+          facilityManager: clampStr(row.facilityManager, MAX_LENGTHS.facilityManager),
+          amcContractors: row.amcContractors.map((c) => clampStr(c, 80)).filter(Boolean).slice(0, 20),
+          status: row.status || existingB.status || 'active',
+        };
+        buildingMap.set(code, nextB);
+        buildingById.set(existingB.id, nextB);
+        updatedBuildingsMap.set(existingB.id, nextB);
+        touchedExistingBuildingIds.add(existingB.id);
+      } else {
+        skippedDuplicates += 1;
+      }
       continue;
     }
+
     const id = generateSafeId('bld');
     const bDoc: Building = {
       id,
@@ -1261,69 +1310,164 @@ export async function bulkImportWorkbookData(
       floorsCount: Math.max(1, Math.min(200, Math.round(Number(row.floorsCount) || 1))),
       facilityManager: clampStr(row.facilityManager, MAX_LENGTHS.facilityManager),
       amcContractors: row.amcContractors.map((c) => clampStr(c, 80)).filter(Boolean).slice(0, 20),
-      status: 'active',
+      status: row.status || 'active',
       supervisorEmails,
       memberEmails: [...supervisorEmails],
       createdByUid: ctx.uid,
     };
     buildingMap.set(code, bDoc);
+    buildingById.set(id, bDoc);
     pendingBuildings.push(bDoc);
   }
 
-  // Prepare new technician roster entries (with badge_passcode grant, authUid='', no legacy PINs)
-  const allTechnicians: Technician[] = [...ctx.technicians];
+  // Stage 1 prep: Technicians / Team Roster (create & update)
+  const techMapById = new Map<string, Technician>(ctx.technicians.map((t) => [t.id, t]));
   const pendingTechPayloads: {
     techId: string;
     grantId: string;
     techData: Omit<Technician, 'createdAt' | 'updatedAt'>;
   }[] = [];
-  const touchedExistingBuildingIds = new Set<string>();
+  const pendingTechUpdates: {
+    existing: Technician;
+    grantId: string;
+    updates: {
+      name: string;
+      email: string;
+      username?: string;
+      authMode: TechAuthMode;
+      authEmail: string;
+      authUid: string;
+      badgeId: string;
+      trade: string;
+      phone: string;
+      role: UserRole;
+      status: 'active' | 'inactive';
+      assignedBuildingIds: string[];
+      supervisorEmails: string[];
+    };
+  }[] = [];
 
   for (const row of techRows) {
     const badge = clampStr(row.badgeId, MAX_LENGTHS.badgeId).toUpperCase();
     const cleanName = clampStr(row.name, MAX_LENGTHS.techName);
     if (!badge || !cleanName) continue;
+
+    const existingTech =
+      (row.id ? existingTechById.get(row.id) : undefined) ||
+      existingTechByBadge.get(badge) ||
+      (row.action === 'update' ? existingTechByName.get(cleanName.toLowerCase()) : undefined);
+
+    const resolveAssignedIds = (fallbackIds: string[]): string[] => {
+      const codeList =
+        row.assignedBuildingCodes && row.assignedBuildingCodes.length > 0
+          ? row.assignedBuildingCodes
+          : row.buildingCode
+            ? [row.buildingCode]
+            : [];
+      if (codeList.length === 0) return fallbackIds;
+      const mapped = codeList
+        .map((c) => buildingMap.get(c.trim().toUpperCase())?.id)
+        .filter((x): x is string => Boolean(x));
+      return mapped.length > 0 ? Array.from(new Set(mapped)).slice(0, 30) : fallbackIds;
+    };
+
+    if (existingTech) {
+      if (
+        !isAdminCaller &&
+        (existingTech.role !== 'technician' ||
+          !existingTech.supervisorEmails.map(normalizeEmail).includes(cleanEmail))
+      ) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      if (row.action !== 'update') {
+        skippedDuplicates += 1;
+        continue;
+      }
+
+      const nextRole: UserRole = isAdminCaller ? row.role || existingTech.role : 'technician';
+      const nextAssigned = resolveAssignedIds(existingTech.assignedBuildingIds || []);
+      const nextStatus: 'active' | 'inactive' = row.status || existingTech.status || 'active';
+      const nextUsername =
+        row.username !== undefined
+          ? clampStr(normalizeUsername(row.username), MAX_LENGTHS.username)
+          : existingTech.username;
+
+      const updateObj = {
+        name: cleanName,
+        email: clampStr(normalizeEmail(row.email ?? existingTech.email ?? ''), MAX_LENGTHS.email),
+        ...(nextUsername !== undefined ? { username: nextUsername } : {}),
+        authMode: existingTech.authMode,
+        authEmail: existingTech.authEmail,
+        authUid: existingTech.authUid,
+        badgeId: badge,
+        trade: clampStr(row.trade || existingTech.trade || 'General Technician', MAX_LENGTHS.trade),
+        phone: clampStr(row.phone ?? existingTech.phone ?? '', MAX_LENGTHS.phone),
+        role: nextRole,
+        status: nextStatus,
+        assignedBuildingIds: nextAssigned,
+        supervisorEmails: existingTech.supervisorEmails,
+      };
+
+      const grantId = existingTech.authEmail ? emailToGrantId(existingTech.authEmail) : '';
+      pendingTechUpdates.push({ existing: existingTech, grantId, updates: updateObj });
+      const mergedTech: Technician = { ...existingTech, ...updateObj };
+      techMapById.set(existingTech.id, mergedTech);
+      for (const bid of [...(existingTech.assignedBuildingIds || []), ...nextAssigned]) {
+        if (buildingById.has(bid)) touchedExistingBuildingIds.add(bid);
+      }
+      continue;
+    }
+
+    const allCurrentTechs = Array.from(techMapById.values());
     const rosterMatch = matchTechnicianByName(
       cleanName,
-      allTechnicians.filter((t) => t.role === 'technician')
+      allCurrentTechs.filter((t) => t.role === 'technician')
     );
-    if (
-      existingTechByBadge.has(badge) ||
-      existingTechByName.has(cleanName.toLowerCase()) ||
-      rosterMatch
-    ) {
+    if (existingTechByName.has(cleanName.toLowerCase()) || rosterMatch) {
       skippedDuplicates += 1;
       continue;
     }
+
     const targetBuilding =
       buildingMap.get((row.buildingCode || '').trim().toUpperCase()) ||
       pendingBuildings[0] ||
       ctx.existingBuildings[0];
-    const assignedIds = targetBuilding ? [targetBuilding.id] : [];
-    const authEmail = clampStr(badgeToAuthEmail(badge), MAX_LENGTHS.email);
-    const techId = generateSafeId('tech');
+    const assignedIds = resolveAssignedIds(targetBuilding ? [targetBuilding.id] : []);
+    const desiredRole: UserRole = isAdminCaller ? row.role || 'technician' : 'technician';
+    const cleanUsername = row.username
+      ? clampStr(normalizeUsername(row.username), MAX_LENGTHS.username)
+      : '';
+    const useUsernameAuth = desiredRole === 'supervisor' && cleanUsername.length >= 3;
+    const authMode: TechAuthMode = useUsernameAuth ? 'username_password' : 'badge_passcode';
+    const authEmail = clampStr(
+      useUsernameAuth ? supervisorToAuthEmail(cleanUsername) : badgeToAuthEmail(badge),
+      MAX_LENGTHS.email
+    );
+    const techId = generateSafeId(desiredRole === 'supervisor' ? 'sup' : 'tech');
     const grantId = emailToGrantId(authEmail);
 
     const techDoc: Omit<Technician, 'createdAt' | 'updatedAt'> = {
       id: techId,
       name: cleanName,
-      email: '',
-      authMode: 'badge_passcode',
+      email: clampStr(normalizeEmail(row.email || ''), MAX_LENGTHS.email),
+      ...(cleanUsername ? { username: cleanUsername } : {}),
+      authMode,
       authEmail,
       authUid: '',
       badgeId: badge,
       trade: clampStr(row.trade || 'General Technician', MAX_LENGTHS.trade),
-      phone: '',
-      role: 'technician',
-      status: 'active',
+      phone: clampStr(row.phone || '', MAX_LENGTHS.phone),
+      role: desiredRole,
+      status: row.status || 'active',
       assignedBuildingIds: assignedIds,
       supervisorEmails,
       createdByUid: ctx.uid,
     };
 
     pendingTechPayloads.push({ techId, grantId, techData: techDoc });
-    allTechnicians.push(techDoc);
-    existingTechByBadge.add(badge);
+    techMapById.set(techId, techDoc);
+    existingTechByBadge.set(badge, techDoc);
     existingTechByName.set(cleanName.toLowerCase(), techDoc);
     for (const bid of assignedIds) {
       if (ctx.existingBuildings.some((b) => b.id === bid)) {
@@ -1332,6 +1476,8 @@ export async function bulkImportWorkbookData(
     }
   }
 
+  const allTechnicians: Technician[] = Array.from(techMapById.values());
+
   // Recompute memberEmails for new buildings and touched existing buildings
   for (const b of pendingBuildings) {
     b.memberEmails = buildBuildingMemberEmails(b.id, allTechnicians, b.supervisorEmails);
@@ -1339,17 +1485,26 @@ export async function bulkImportWorkbookData(
 
   const totalOps =
     pendingBuildings.length +
+    updatedBuildingsMap.size +
     pendingTechPayloads.length +
+    pendingTechUpdates.length +
+    assetRows.length +
     meterRows.length +
     params.logsToCreate.length +
     workRows.length +
     otRows.length +
     readingRows.length +
-    scheduleRows.length;
+    scheduleRows.length +
+    notifRows.length;
   let completedOps = 0;
 
   // Stage 1: Commit Buildings, Technicians & Access Grants first (so building docs exist for rules)
-  if (pendingBuildings.length > 0 || pendingTechPayloads.length > 0 || touchedExistingBuildingIds.size > 0) {
+  if (
+    pendingBuildings.length > 0 ||
+    pendingTechPayloads.length > 0 ||
+    pendingTechUpdates.length > 0 ||
+    touchedExistingBuildingIds.size > 0
+  ) {
     ctx.onProgress?.('Setting up buildings and team roster...', completedOps, totalOps);
     const stage1Ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
 
@@ -1364,16 +1519,37 @@ export async function bulkImportWorkbookData(
     }
 
     for (const bid of touchedExistingBuildingIds) {
-      const existingB = ctx.existingBuildings.find((b) => b.id === bid);
-      if (!existingB) continue;
-      const nextMembers = buildBuildingMemberEmails(existingB.id, allTechnicians, existingB.supervisorEmails);
-      buildingMap.set(existingB.code.trim().toUpperCase(), { ...existingB, memberEmails: nextMembers });
-      stage1Ops.push((batch) => {
-        batch.update(doc(db, 'buildings', existingB.id), {
-          memberEmails: nextMembers,
-          updatedAt: serverTimestamp(),
+      const baseB = updatedBuildingsMap.get(bid) || buildingById.get(bid);
+      if (!baseB) continue;
+      const nextMembers = buildBuildingMemberEmails(baseB.id, allTechnicians, baseB.supervisorEmails);
+      const updatedB: Building = { ...baseB, memberEmails: nextMembers };
+      buildingMap.set(updatedB.code.trim().toUpperCase(), updatedB);
+      buildingById.set(updatedB.id, updatedB);
+
+      if (updatedBuildingsMap.has(bid)) {
+        stage1Ops.push((batch) => {
+          batch.update(doc(db, 'buildings', updatedB.id), {
+            code: updatedB.code,
+            name: updatedB.name,
+            address: updatedB.address,
+            floorsCount: updatedB.floorsCount,
+            facilityManager: updatedB.facilityManager,
+            amcContractors: updatedB.amcContractors,
+            status: updatedB.status,
+            supervisorEmails: updatedB.supervisorEmails,
+            memberEmails: nextMembers,
+            updatedAt: serverTimestamp(),
+          });
         });
-      });
+        updatedCount += 1;
+      } else {
+        stage1Ops.push((batch) => {
+          batch.update(doc(db, 'buildings', updatedB.id), {
+            memberEmails: nextMembers,
+            updatedAt: serverTimestamp(),
+          });
+        });
+      }
     }
 
     for (const item of pendingTechPayloads) {
@@ -1385,6 +1561,7 @@ export async function bulkImportWorkbookData(
         });
         batch.set(doc(db, 'access_grants', item.grantId), {
           email: item.techData.email,
+          ...(item.techData.username ? { username: item.techData.username } : {}),
           authMode: item.techData.authMode,
           authEmail: item.techData.authEmail,
           authUid: item.techData.authUid,
@@ -1392,7 +1569,7 @@ export async function bulkImportWorkbookData(
           name: item.techData.name,
           badgeId: item.techData.badgeId,
           trade: item.techData.trade,
-          role: 'technician',
+          role: item.techData.role,
           status: item.techData.status,
           assignedBuildingIds: item.techData.assignedBuildingIds,
           supervisorEmails: item.techData.supervisorEmails,
@@ -1402,9 +1579,35 @@ export async function bulkImportWorkbookData(
       });
     }
 
-    for (let i = 0; i < stage1Ops.length; i += 200) {
+    for (const item of pendingTechUpdates) {
+      stage1Ops.push((batch) => {
+        batch.update(doc(db, 'technicians', item.existing.id), {
+          ...item.updates,
+          updatedAt: serverTimestamp(),
+        });
+        if (item.grantId) {
+          batch.update(doc(db, 'access_grants', item.grantId), {
+            email: item.updates.email,
+            ...(item.updates.username !== undefined ? { username: item.updates.username } : {}),
+            authMode: item.updates.authMode,
+            authUid: item.updates.authUid,
+            name: item.updates.name,
+            badgeId: item.updates.badgeId,
+            trade: item.updates.trade,
+            role: item.updates.role,
+            status: item.updates.status,
+            assignedBuildingIds: item.updates.assignedBuildingIds,
+            supervisorEmails: item.updates.supervisorEmails,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      });
+      updatedCount += 1;
+    }
+
+    for (let i = 0; i < stage1Ops.length; i += 150) {
       const batch = writeBatch(db);
-      for (const fn of stage1Ops.slice(i, i + 200)) fn(batch);
+      for (const fn of stage1Ops.slice(i, i + 150)) fn(batch);
       try {
         await batch.commit();
       } catch (error) {
@@ -1413,13 +1616,111 @@ export async function bulkImportWorkbookData(
     }
     createdBuildings = pendingBuildings.length;
     createdTechnicians = pendingTechPayloads.length;
-    completedOps += createdBuildings + createdTechnicians;
+    completedOps +=
+      createdBuildings +
+      updatedBuildingsMap.size +
+      createdTechnicians +
+      pendingTechUpdates.length;
   }
 
-  // Stage 2: Utility Meters (plus auto-create any missing meter referenced by readings)
+  const chunkSize = 300;
+
+  // Stage 2A: Assets & QR Equipment Registry (create & update)
+  if (assetRows.length > 0) {
+    const assetById = new Map<string, Asset>();
+    const assetByKey = new Map<string, Asset>();
+    for (const a of ctx.existingAssets || []) {
+      assetById.set(a.id, a);
+      assetByKey.set(`${a.buildingId}::${a.assetTag.trim().toUpperCase()}`, a);
+    }
+
+    for (let i = 0; i < assetRows.length; i += chunkSize) {
+      ctx.onProgress?.('Syncing equipment & QR assets...', completedOps, totalOps);
+      const slice = assetRows.slice(i, i + chunkSize);
+      const batch = writeBatch(db);
+      let opsInBatch = 0;
+
+      for (const row of slice) {
+        const b = buildingMap.get(row.buildingCode.trim().toUpperCase());
+        if (!b) continue;
+        const cleanTag = clampStr(row.assetTag, MAX_LENGTHS.assetTag);
+        const cleanName = clampStr(row.assetName, MAX_LENGTHS.assetName);
+        if (!cleanTag || !cleanName) continue;
+
+        const keyNatural = `${b.id}::${cleanTag.toUpperCase()}`;
+        const existingA = (row.id ? assetById.get(row.id) : undefined) || assetByKey.get(keyNatural);
+
+        if (existingA) {
+          if (row.action === 'update') {
+            batch.update(doc(db, 'assets', existingA.id), {
+              buildingCode: b.code,
+              buildingName: b.name,
+              assetTag: cleanTag,
+              assetName: cleanName,
+              discipline: clampStr(row.discipline || existingA.discipline || 'General MEP', MAX_LENGTHS.discipline),
+              locationZone: clampStr(row.locationZone, MAX_LENGTHS.locationZone),
+              manufacturerModel: clampStr(row.manufacturerModel, MAX_LENGTHS.manufacturerModel),
+              serialNumber: clampStr(row.serialNumber, MAX_LENGTHS.serialNumber),
+              ppmFrequency: row.ppmFrequency,
+              status: row.status || 'active',
+              supervisorEmails: b.supervisorEmails,
+              buildingMemberEmails: b.memberEmails,
+              updatedAt: serverTimestamp(),
+            });
+            updatedCount += 1;
+            opsInBatch += 1;
+          } else {
+            skippedDuplicates += 1;
+          }
+          continue;
+        }
+
+        const assetId = generateSafeId('ast');
+        const assetDoc: Asset = {
+          id: assetId,
+          buildingId: b.id,
+          buildingCode: b.code,
+          buildingName: b.name,
+          assetTag: cleanTag,
+          assetName: cleanName,
+          discipline: clampStr(row.discipline || 'General MEP', MAX_LENGTHS.discipline),
+          locationZone: clampStr(row.locationZone, MAX_LENGTHS.locationZone),
+          manufacturerModel: clampStr(row.manufacturerModel, MAX_LENGTHS.manufacturerModel),
+          serialNumber: clampStr(row.serialNumber, MAX_LENGTHS.serialNumber),
+          ppmFrequency: row.ppmFrequency,
+          status: row.status || 'active',
+          supervisorEmails: b.supervisorEmails,
+          buildingMemberEmails: b.memberEmails,
+          createdByUid: ctx.uid,
+        };
+        assetById.set(assetId, assetDoc);
+        assetByKey.set(keyNatural, assetDoc);
+        batch.set(doc(db, 'assets', assetId), {
+          ...assetDoc,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        createdAssets += 1;
+        opsInBatch += 1;
+      }
+
+      if (opsInBatch > 0) {
+        try {
+          await batch.commit();
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, 'assets');
+        }
+      }
+      completedOps += slice.length;
+    }
+  }
+
+  // Stage 2B: Utility Meters (create & update + auto-create missing meters referenced by readings)
+  const meterById = new Map<string, UtilityMeter>();
   const meterByBuildingAndNo = new Map<string, UtilityMeter>();
   const meterByBuildingTypeArea = new Map<string, UtilityMeter>();
   for (const m of ctx.existingMeters || []) {
+    meterById.set(m.id, m);
     meterByBuildingAndNo.set(`${m.buildingId}::${m.meterNo.trim().toUpperCase()}`, m);
     meterByBuildingTypeArea.set(
       `${m.buildingId}::${m.meterType.toLowerCase()}::${m.area.trim().toLowerCase()}`,
@@ -1427,15 +1728,53 @@ export async function bulkImportWorkbookData(
     );
   }
 
-  const metersToWrite: UtilityMeter[] = [];
+  const meterOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
   for (const row of meterRows) {
     const b = buildingMap.get(row.buildingCode.toUpperCase());
     if (!b) continue;
-    const keyNo = `${b.id}::${row.meterNo.trim().toUpperCase()}`;
-    if (meterByBuildingAndNo.has(keyNo)) {
-      skippedDuplicates += 1;
+    const cleanNo = clampStr(row.meterNo, MAX_LENGTHS.meterNo);
+    const keyNo = `${b.id}::${cleanNo.toUpperCase()}`;
+    const existingM = (row.id ? meterById.get(row.id) : undefined) || meterByBuildingAndNo.get(keyNo);
+
+    if (existingM) {
+      if (row.action === 'update') {
+        const nextMeter: UtilityMeter = {
+          ...existingM,
+          meterType: row.meterType,
+          area: clampStr(row.area, MAX_LENGTHS.locationZone) || 'Common',
+          meterNo: cleanNo,
+          accountNo: clampStr(row.accountNo, MAX_LENGTHS.accountNo),
+          unit: clampStr(row.unit || DEFAULT_METER_UNITS[row.meterType], MAX_LENGTHS.meterUnit),
+          status: row.status || existingM.status || 'active',
+          supervisorEmails: b.supervisorEmails,
+          buildingMemberEmails: b.memberEmails,
+        };
+        meterById.set(existingM.id, nextMeter);
+        meterByBuildingAndNo.set(keyNo, nextMeter);
+        meterByBuildingTypeArea.set(
+          `${b.id}::${nextMeter.meterType.toLowerCase()}::${nextMeter.area.trim().toLowerCase()}`,
+          nextMeter
+        );
+        meterOps.push((batch) => {
+          batch.update(doc(db, 'utility_meters', existingM.id), {
+            meterType: nextMeter.meterType,
+            area: nextMeter.area,
+            meterNo: nextMeter.meterNo,
+            accountNo: nextMeter.accountNo,
+            unit: nextMeter.unit,
+            status: nextMeter.status,
+            supervisorEmails: b.supervisorEmails,
+            buildingMemberEmails: b.memberEmails,
+            updatedAt: serverTimestamp(),
+          });
+        });
+        updatedCount += 1;
+      } else {
+        skippedDuplicates += 1;
+      }
       continue;
     }
+
     const id = generateSafeId('mtr');
     const meterDoc: UtilityMeter = {
       id,
@@ -1443,20 +1782,28 @@ export async function bulkImportWorkbookData(
       buildingCode: b.code,
       meterType: row.meterType,
       area: clampStr(row.area, MAX_LENGTHS.locationZone) || 'Common',
-      meterNo: clampStr(row.meterNo, MAX_LENGTHS.meterNo),
+      meterNo: cleanNo,
       accountNo: clampStr(row.accountNo, MAX_LENGTHS.accountNo),
       unit: clampStr(row.unit || DEFAULT_METER_UNITS[row.meterType], MAX_LENGTHS.meterUnit),
-      status: 'active',
+      status: row.status || 'active',
       supervisorEmails: b.supervisorEmails,
       buildingMemberEmails: b.memberEmails,
       createdByUid: ctx.uid,
     };
+    meterById.set(id, meterDoc);
     meterByBuildingAndNo.set(keyNo, meterDoc);
     meterByBuildingTypeArea.set(
       `${b.id}::${meterDoc.meterType.toLowerCase()}::${meterDoc.area.trim().toLowerCase()}`,
       meterDoc
     );
-    metersToWrite.push(meterDoc);
+    meterOps.push((batch) => {
+      batch.set(doc(db, 'utility_meters', id), {
+        ...meterDoc,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    });
+    createdMeters += 1;
   }
 
   // Ensure any reading with an unregistered meter gets a registered meter first
@@ -1487,67 +1834,128 @@ export async function bulkImportWorkbookData(
         buildingMemberEmails: b.memberEmails,
         createdByUid: ctx.uid,
       };
+      meterById.set(id, meterDoc);
       meterByBuildingAndNo.set(keyNo, meterDoc);
-      metersToWrite.push(meterDoc);
-    }
-  }
-
-  if (metersToWrite.length > 0) {
-    ctx.onProgress?.('Registering utility meters...', completedOps, totalOps);
-    const batch = writeBatch(db);
-    for (const m of metersToWrite) {
-      batch.set(doc(db, 'utility_meters', m.id), {
-        ...m,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      meterOps.push((batch) => {
+        batch.set(doc(db, 'utility_meters', id), {
+          ...meterDoc,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
       });
-    }
-    try {
-      await batch.commit();
-      createdMeters = metersToWrite.length;
-      completedOps += createdMeters;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'utility_meters');
+      createdMeters += 1;
     }
   }
 
-  const chunkSize = 300;
+  if (meterOps.length > 0) {
+    ctx.onProgress?.('Registering utility meters...', completedOps, totalOps);
+    for (let i = 0; i < meterOps.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      for (const fn of meterOps.slice(i, i + chunkSize)) fn(batch);
+      try {
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, 'utility_meters');
+      }
+    }
+    completedOps += meterRows.length;
+  }
 
-  // Stage 3: Maintenance Logs
+  // Stage 3: Maintenance Logs (create & update)
+  const existingLogById = new Map<string, MaintenanceLog>(
+    (ctx.existingLogs || []).map((l) => [l.id, l])
+  );
   for (let i = 0; i < params.logsToCreate.length; i += chunkSize) {
     ctx.onProgress?.('Importing maintenance & PPM logs...', completedOps, totalOps);
     const slice = params.logsToCreate.slice(i, i + chunkSize);
     const batch = writeBatch(db);
+    let opsInBatch = 0;
 
     for (const row of slice) {
       const b = buildingMap.get(row.buildingCode.toUpperCase());
       if (!b) continue;
-      const logId = generateSafeId('log');
-      const isApproved = row.approvalStatus === 'approved';
       const isPpm = row.entryType === 'ppm_inhouse' || row.entryType === 'ppm_amc';
       const freq = isPpm ? row.ppmFrequency : 'none';
-      const nextDueDate = isPpm ? computeNextPpmDueDate(row.completedDate, freq) : '';
+      const nextDueDate = isPpm
+        ? clampStr(row.nextDueDate || computeNextPpmDueDate(row.completedDate, freq), MAX_LENGTHS.dateStr)
+        : '';
+      const existingLog = row.id ? existingLogById.get(row.id) : undefined;
 
+      if (existingLog) {
+        if (row.action === 'update') {
+          const statusChanged = row.approvalStatus !== existingLog.approvalStatus;
+          batch.update(doc(db, 'maintenance_logs', existingLog.id), {
+            buildingCode: b.code,
+            buildingName: b.name,
+            entryType: row.entryType,
+            discipline: clampStr(row.discipline, MAX_LENGTHS.discipline) || 'General MEP',
+            assetName: clampStr(row.assetName, MAX_LENGTHS.assetName),
+            assetTag: clampStr(row.assetTag, MAX_LENGTHS.assetTag),
+            locationZone: clampStr(row.locationZone, MAX_LENGTHS.locationZone),
+            title: clampStr(row.title, MAX_LENGTHS.title),
+            workNotes: clampStr(row.workNotes, MAX_LENGTHS.workNotes),
+            ppmFrequency: freq,
+            nextDueDate,
+            amcContractor: row.entryType === 'ppm_amc' ? clampStr(row.amcContractor, MAX_LENGTHS.amcContractor) : '',
+            scheduledDate: clampStr(row.scheduledDate, MAX_LENGTHS.dateStr),
+            completedDate: clampStr(row.completedDate, MAX_LENGTHS.dateStr) || existingLog.completedDate,
+            outcome: row.outcome,
+            partsUsed: clampStr(row.partsUsed, MAX_LENGTHS.partsUsed),
+            laborHours: Math.max(0, Math.min(1000, Number(row.laborHours) || 0)),
+            approvalStatus: row.approvalStatus,
+            reviewNotes:
+              row.reviewNotes !== undefined
+                ? clampStr(row.reviewNotes, MAX_LENGTHS.reviewNotes)
+                : existingLog.reviewNotes,
+            reviewedByUid: statusChanged
+              ? row.approvalStatus === 'pending_approval'
+                ? ''
+                : ctx.uid
+              : existingLog.reviewedByUid,
+            reviewedByName: statusChanged
+              ? row.approvalStatus === 'pending_approval'
+                ? ''
+                : actorName
+              : existingLog.reviewedByName,
+            reviewedAtIso: statusChanged
+              ? row.approvalStatus === 'pending_approval'
+                ? ''
+                : new Date().toISOString()
+              : existingLog.reviewedAtIso,
+            supervisorEmails: b.supervisorEmails,
+            buildingMemberEmails: b.memberEmails,
+            updatedAt: serverTimestamp(),
+          });
+          updatedCount += 1;
+          opsInBatch += 1;
+        } else {
+          skippedDuplicates += 1;
+        }
+        continue;
+      }
+
+      const logId = generateSafeId('log');
+      const isApproved = row.approvalStatus === 'approved';
       batch.set(doc(db, 'maintenance_logs', logId), {
         id: logId,
         buildingId: b.id,
         buildingCode: b.code,
         buildingName: b.name,
         entryType: row.entryType,
-        discipline: row.discipline,
-        assetName: row.assetName,
-        assetTag: row.assetTag,
-        locationZone: row.locationZone,
-        title: row.title,
-        workNotes: row.workNotes,
+        discipline: clampStr(row.discipline, MAX_LENGTHS.discipline) || 'General MEP',
+        assetName: clampStr(row.assetName, MAX_LENGTHS.assetName),
+        assetTag: clampStr(row.assetTag, MAX_LENGTHS.assetTag),
+        locationZone: clampStr(row.locationZone, MAX_LENGTHS.locationZone),
+        title: clampStr(row.title, MAX_LENGTHS.title),
+        workNotes: clampStr(row.workNotes, MAX_LENGTHS.workNotes),
         ppmFrequency: freq,
         nextDueDate,
-        amcContractor: row.entryType === 'ppm_amc' ? row.amcContractor : '',
-        scheduledDate: row.scheduledDate,
-        completedDate: row.completedDate,
+        amcContractor: row.entryType === 'ppm_amc' ? clampStr(row.amcContractor, MAX_LENGTHS.amcContractor) : '',
+        scheduledDate: clampStr(row.scheduledDate, MAX_LENGTHS.dateStr),
+        completedDate: clampStr(row.completedDate, MAX_LENGTHS.dateStr) || new Date().toISOString().slice(0, 10),
         outcome: row.outcome,
-        partsUsed: row.partsUsed,
-        laborHours: row.laborHours,
+        partsUsed: clampStr(row.partsUsed, MAX_LENGTHS.partsUsed),
+        laborHours: Math.max(0, Math.min(1000, Number(row.laborHours) || 0)),
         beforePhotoIds: [],
         afterPhotoIds: [],
         scannedReportIds: [],
@@ -1556,7 +1964,7 @@ export async function bulkImportWorkbookData(
         submittedByName: actorName,
         submittedByEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
         submittedByRole: ctx.role === 'admin' ? 'admin' : 'supervisor',
-        reviewNotes: isApproved ? 'Imported via Excel template.' : '',
+        reviewNotes: clampStr(row.reviewNotes ?? (isApproved ? 'Imported via Excel template.' : ''), MAX_LENGTHS.reviewNotes),
         reviewedByUid: isApproved ? ctx.uid : '',
         reviewedByName: isApproved ? actorName : '',
         reviewedAtIso: isApproved ? new Date().toISOString() : '',
@@ -1567,18 +1975,25 @@ export async function bulkImportWorkbookData(
         updatedAt: serverTimestamp(),
       });
       createdLogs += 1;
+      opsInBatch += 1;
     }
 
-    try {
-      await batch.commit();
-      completedOps += slice.length;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'maintenance_logs');
+    if (opsInBatch > 0) {
+      try {
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, 'maintenance_logs');
+      }
     }
+    completedOps += slice.length;
   }
 
-  // Stage 4: Daily Work Logs
-  const existingWorkIdSet = new Set((ctx.existingWorkLogs || []).map((w) => w.id));
+  // Stage 4: Daily Work Logs (create & update)
+  const existingWorkById = new Map<string, WorkLog>(
+    (ctx.existingWorkLogs || []).map((w) => [w.id, w])
+  );
+  const techRoster = allTechnicians.filter((t) => t.role === 'technician');
+
   for (let i = 0; i < workRows.length; i += chunkSize) {
     ctx.onProgress?.(`Importing work logs (${i + 1}–${Math.min(workRows.length, i + chunkSize)} of ${workRows.length})...`, completedOps, totalOps);
     const slice = workRows.slice(i, i + chunkSize);
@@ -1589,24 +2004,69 @@ export async function bulkImportWorkbookData(
       const b = buildingMap.get(row.buildingCode.toUpperCase());
       if (!b) continue;
       const docId = clampStr(row.id, MAX_LENGTHS.id) || generateSafeId('wl');
-      if (existingWorkIdSet.has(docId)) {
-        skippedDuplicates += 1;
-        continue;
-      }
-      existingWorkIdSet.add(docId);
+      const existingW = existingWorkById.get(docId);
 
-      const techRoster = allTechnicians.filter((t) => t.role === 'technician');
+      const legacyAction = (row as { action?: unknown }).action;
+      const actionText = clampStr(
+        row.actionTaken ??
+          (typeof legacyAction === 'string' && legacyAction !== 'create' && legacyAction !== 'update'
+            ? legacyAction
+            : ''),
+        MAX_LENGTHS.action
+      );
+
       const matchedTech = matchTechnicianByName(row.technicianName, techRoster);
-      const targetUid = clampStr(matchedTech ? matchedTech.authUid || '' : ctx.uid, MAX_LENGTHS.id);
+      const targetUid = clampStr(
+        matchedTech ? matchedTech.authUid || '' : existingW ? existingW.technicianUid : ctx.uid,
+        MAX_LENGTHS.id
+      );
       const targetName = clampStr(
-        matchedTech ? matchedTech.name : row.technicianName || actorName,
+        matchedTech ? matchedTech.name : row.technicianName || existingW?.technicianName || actorName,
         MAX_LENGTHS.techName
       );
       const targetEmail = clampStr(
-        matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
+        matchedTech
+          ? normalizeEmail(matchedTech.authEmail || matchedTech.email)
+          : existingW?.technicianEmail || cleanEmail,
         MAX_LENGTHS.email
       );
 
+      if (existingW) {
+        if (row.action === 'update') {
+          batch.update(doc(db, 'work_logs', existingW.id), {
+            logDate: clampStr(row.logDate, MAX_LENGTHS.dateStr) || existingW.logDate,
+            shift: row.shift,
+            woNumber: clampStr(row.woNumber, MAX_LENGTHS.woNumber),
+            location: clampStr(row.location, MAX_LENGTHS.locationZone) || 'General',
+            category: clampStr(row.category, MAX_LENGTHS.discipline) || 'General Maintenance',
+            priority: row.priority,
+            complaint: clampStr(row.complaint, MAX_LENGTHS.complaint) || 'Maintenance work',
+            action: actionText,
+            materials: clampStr(row.materials, MAX_LENGTHS.materials),
+            receivedTime: clampStr(row.receivedTime, MAX_LENGTHS.timeStr),
+            startTime: clampStr(row.startTime, MAX_LENGTHS.timeStr),
+            finishTime: clampStr(row.finishTime, MAX_LENGTHS.timeStr),
+            durationHours: Math.max(0, Math.min(48, Number(row.durationHours) || 0)),
+            status: row.status,
+            pendingReason: row.status === 'Completed' ? '' : clampStr(row.pendingReason, MAX_LENGTHS.pendingReason),
+            remarks: clampStr(row.remarks, MAX_LENGTHS.remarks),
+            technicianUid: targetUid,
+            technicianName: targetName,
+            technicianEmail: targetEmail,
+            supervisorName: clampStr(row.supervisorName || b.facilityManager || '', MAX_LENGTHS.techName),
+            supervisorEmails: b.supervisorEmails,
+            buildingMemberEmails: b.memberEmails,
+            updatedAt: serverTimestamp(),
+          });
+          updatedCount += 1;
+          opsInBatch += 1;
+        } else {
+          skippedDuplicates += 1;
+        }
+        continue;
+      }
+
+      existingWorkById.set(docId, { id: docId } as WorkLog);
       batch.set(doc(db, 'work_logs', docId), {
         id: docId,
         buildingId: b.id,
@@ -1619,7 +2079,7 @@ export async function bulkImportWorkbookData(
         category: clampStr(row.category, MAX_LENGTHS.discipline) || 'General Maintenance',
         priority: row.priority,
         complaint: clampStr(row.complaint, MAX_LENGTHS.complaint) || 'Maintenance work',
-        action: clampStr(row.action, MAX_LENGTHS.action),
+        action: actionText,
         materials: clampStr(row.materials, MAX_LENGTHS.materials),
         receivedTime: clampStr(row.receivedTime, MAX_LENGTHS.timeStr),
         startTime: clampStr(row.startTime, MAX_LENGTHS.timeStr),
@@ -1652,8 +2112,10 @@ export async function bulkImportWorkbookData(
     completedOps += slice.length;
   }
 
-  // Stage 5: Overtime Logs
-  const existingOtIdSet = new Set((ctx.existingOvertimeLogs || []).map((o) => o.id));
+  // Stage 5: Overtime Logs (create & update)
+  const existingOtById = new Map<string, OvertimeLog>(
+    (ctx.existingOvertimeLogs || []).map((o) => [o.id, o])
+  );
   for (let i = 0; i < otRows.length; i += chunkSize) {
     ctx.onProgress?.('Importing overtime entries...', completedOps, totalOps);
     const slice = otRows.slice(i, i + chunkSize);
@@ -1664,25 +2126,60 @@ export async function bulkImportWorkbookData(
       const b = buildingMap.get(row.buildingCode.toUpperCase());
       if (!b) continue;
       const docId = clampStr(row.id, MAX_LENGTHS.id) || generateSafeId('ot');
-      if (existingOtIdSet.has(docId)) {
-        skippedDuplicates += 1;
-        continue;
-      }
-      existingOtIdSet.add(docId);
-      const matchedTech = matchTechnicianByName(
-        row.technicianName,
-        allTechnicians.filter((t) => t.role === 'technician')
+      const existingOt = existingOtById.get(docId);
+
+      const matchedTech = matchTechnicianByName(row.technicianName, techRoster);
+      const targetUid = clampStr(
+        matchedTech ? matchedTech.authUid || '' : existingOt ? existingOt.technicianUid : ctx.uid,
+        MAX_LENGTHS.id
       );
-      const targetUid = clampStr(matchedTech ? matchedTech.authUid || '' : ctx.uid, MAX_LENGTHS.id);
       const targetName = clampStr(
-        matchedTech ? matchedTech.name : row.technicianName || actorName,
+        matchedTech ? matchedTech.name : row.technicianName || existingOt?.technicianName || actorName,
         MAX_LENGTHS.techName
       );
       const targetEmail = clampStr(
-        matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
+        matchedTech
+          ? normalizeEmail(matchedTech.authEmail || matchedTech.email)
+          : existingOt?.technicianEmail || cleanEmail,
         MAX_LENGTHS.email
       );
 
+      if (existingOt) {
+        if (row.action === 'update') {
+          batch.update(doc(db, 'overtime_logs', existingOt.id), {
+            otDate: clampStr(row.otDate, MAX_LENGTHS.dateStr) || existingOt.otDate,
+            fromTime: clampStr(row.fromTime, MAX_LENGTHS.timeStr) || '00:00',
+            toTime: clampStr(row.toTime, MAX_LENGTHS.timeStr) || '00:00',
+            hours: Math.max(0, Math.min(24, Number(row.hours) || 0)),
+            otCategoryType: row.otCategoryType,
+            workType: clampStr(row.workType, MAX_LENGTHS.workType) || 'Overtime Work',
+            location: clampStr(row.location, MAX_LENGTHS.locationZone) || 'Common Area',
+            workDescription: clampStr(row.workDescription, MAX_LENGTHS.workDescription) || 'Overtime duty',
+            approvalStatus: row.approvalStatus || existingOt.approvalStatus,
+            reviewNotes:
+              row.reviewNotes !== undefined
+                ? clampStr(row.reviewNotes, MAX_LENGTHS.reviewNotes)
+                : existingOt.reviewNotes,
+            technicianUid: targetUid,
+            technicianName: targetName,
+            technicianBadgeId: clampStr(
+              matchedTech?.badgeId || existingOt.technicianBadgeId || '',
+              MAX_LENGTHS.badgeId
+            ),
+            technicianEmail: targetEmail,
+            supervisorEmails: b.supervisorEmails,
+            buildingMemberEmails: b.memberEmails,
+            updatedAt: serverTimestamp(),
+          });
+          updatedCount += 1;
+          opsInBatch += 1;
+        } else {
+          skippedDuplicates += 1;
+        }
+        continue;
+      }
+
+      existingOtById.set(docId, { id: docId } as OvertimeLog);
       batch.set(doc(db, 'overtime_logs', docId), {
         id: docId,
         buildingId: b.id,
@@ -1696,8 +2193,8 @@ export async function bulkImportWorkbookData(
         workType: clampStr(row.workType, MAX_LENGTHS.workType) || 'Overtime Work',
         location: clampStr(row.location, MAX_LENGTHS.locationZone) || 'Common Area',
         workDescription: clampStr(row.workDescription, MAX_LENGTHS.workDescription) || 'Overtime duty',
-        approvalStatus: 'approved',
-        reviewNotes: 'Imported from legacy records.',
+        approvalStatus: row.approvalStatus === 'pending_approval' ? 'pending_approval' : 'approved',
+        reviewNotes: clampStr(row.reviewNotes ?? 'Imported via Excel template.', MAX_LENGTHS.reviewNotes),
         technicianUid: targetUid,
         technicianName: targetName,
         technicianBadgeId: clampStr(matchedTech?.badgeId || '', MAX_LENGTHS.badgeId),
@@ -1722,8 +2219,10 @@ export async function bulkImportWorkbookData(
     completedOps += slice.length;
   }
 
-  // Stage 6: Utility Readings
-  const existingReadingIdSet = new Set((ctx.existingReadings || []).map((r) => r.id));
+  // Stage 6: Utility Readings (create & update)
+  const existingReadingById = new Map<string, UtilityReading>(
+    (ctx.existingReadings || []).map((r) => [r.id, r])
+  );
   for (let i = 0; i < readingRows.length; i += chunkSize) {
     ctx.onProgress?.('Importing utility meter readings...', completedOps, totalOps);
     const slice = readingRows.slice(i, i + chunkSize);
@@ -1734,31 +2233,52 @@ export async function bulkImportWorkbookData(
       const b = buildingMap.get(row.buildingCode.toUpperCase());
       if (!b) continue;
       const docId = clampStr(row.id, MAX_LENGTHS.id) || generateSafeId('urd');
-      if (existingReadingIdSet.has(docId)) {
-        skippedDuplicates += 1;
+      const existingR = existingReadingById.get(docId);
+
+      const matchedTech = matchTechnicianByName(row.technicianName, techRoster);
+      const targetUid = clampStr(
+        matchedTech ? matchedTech.authUid || '' : existingR ? existingR.technicianUid : ctx.uid,
+        MAX_LENGTHS.id
+      );
+      const targetName = clampStr(
+        matchedTech ? matchedTech.name : row.technicianName || existingR?.technicianName || actorName,
+        MAX_LENGTHS.techName
+      );
+      const targetEmail = clampStr(
+        matchedTech
+          ? normalizeEmail(matchedTech.authEmail || matchedTech.email)
+          : existingR?.technicianEmail || cleanEmail,
+        MAX_LENGTHS.email
+      );
+
+      if (existingR) {
+        if (row.action === 'update') {
+          batch.update(doc(db, 'utility_readings', existingR.id), {
+            readingDate: clampStr(row.readingDate, MAX_LENGTHS.dateStr) || existingR.readingDate,
+            readingValue: Math.max(0, Math.min(999999999, Number(row.readingValue) || 0)),
+            notes: clampStr(row.notes, 400),
+            technicianUid: targetUid,
+            technicianName: targetName,
+            technicianEmail: targetEmail,
+            supervisorEmails: b.supervisorEmails,
+            buildingMemberEmails: b.memberEmails,
+            updatedAt: serverTimestamp(),
+          });
+          updatedCount += 1;
+          opsInBatch += 1;
+        } else {
+          skippedDuplicates += 1;
+        }
         continue;
       }
+
       const matchedMeter =
         meterByBuildingAndNo.get(`${b.id}::${row.meterNo.trim().toUpperCase()}`) ||
         meterByBuildingTypeArea.get(
           `${b.id}::${row.meterType.toLowerCase()}::${row.area.trim().toLowerCase()}`
         );
       if (!matchedMeter) continue;
-      existingReadingIdSet.add(docId);
-
-      const matchedTech = matchTechnicianByName(
-        row.technicianName,
-        allTechnicians.filter((t) => t.role === 'technician')
-      );
-      const targetUid = clampStr(matchedTech ? matchedTech.authUid || '' : ctx.uid, MAX_LENGTHS.id);
-      const targetName = clampStr(
-        matchedTech ? matchedTech.name : row.technicianName || actorName,
-        MAX_LENGTHS.techName
-      );
-      const targetEmail = clampStr(
-        matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
-        MAX_LENGTHS.email
-      );
+      existingReadingById.set(docId, { id: docId } as UtilityReading);
 
       batch.set(doc(db, 'utility_readings', docId), {
         id: docId,
@@ -1795,8 +2315,10 @@ export async function bulkImportWorkbookData(
     completedOps += slice.length;
   }
 
-  // Stage 7: Tenant Schedules
-  const existingScheduleIdSet = new Set((ctx.existingSchedules || []).map((s) => s.id));
+  // Stage 7: Tenant Schedules (create & update)
+  const existingScheduleById = new Map<string, TenantSchedule>(
+    (ctx.existingSchedules || []).map((s) => [s.id, s])
+  );
   for (let i = 0; i < scheduleRows.length; i += chunkSize) {
     ctx.onProgress?.('Importing tenant schedules...', completedOps, totalOps);
     const slice = scheduleRows.slice(i, i + chunkSize);
@@ -1807,16 +2329,51 @@ export async function bulkImportWorkbookData(
       const b = buildingMap.get(row.buildingCode.toUpperCase());
       if (!b) continue;
       const docId = clampStr(row.id, MAX_LENGTHS.id) || generateSafeId('sch');
-      if (existingScheduleIdSet.has(docId)) {
-        skippedDuplicates += 1;
-        continue;
-      }
-      existingScheduleIdSet.add(docId);
-      const matchedTech = matchTechnicianByName(
-        row.assignedTechName,
-        allTechnicians.filter((t) => t.role === 'technician')
+      const existingS = existingScheduleById.get(docId);
+
+      const matchedTech = matchTechnicianByName(row.assignedTechName, techRoster);
+      const assignedUid = clampStr(
+        matchedTech?.authUid || (existingS ? existingS.assignedTechUid : '') || '',
+        MAX_LENGTHS.id
+      );
+      const assignedName = clampStr(
+        matchedTech ? matchedTech.name : row.assignedTechName || existingS?.assignedTechName || actorName,
+        MAX_LENGTHS.techName
+      );
+      const assignedEmail = clampStr(
+        matchedTech
+          ? normalizeEmail(matchedTech.authEmail || matchedTech.email)
+          : existingS?.assignedTechEmail || cleanEmail,
+        MAX_LENGTHS.email
       );
 
+      if (existingS) {
+        if (row.action === 'update') {
+          batch.update(doc(db, 'tenant_schedules', existingS.id), {
+            scheduleDate: clampStr(row.scheduleDate, MAX_LENGTHS.dateStr) || existingS.scheduleDate,
+            timeSlot: clampStr(row.timeSlot, MAX_LENGTHS.timeSlot),
+            unitOrLocation: clampStr(row.unitOrLocation, MAX_LENGTHS.locationZone) || 'Unit',
+            tenantName: clampStr(row.tenantName, MAX_LENGTHS.techName),
+            category: clampStr(row.category, MAX_LENGTHS.discipline) || 'General Maintenance',
+            description: clampStr(row.description, MAX_LENGTHS.workDescription) || 'Scheduled unit maintenance',
+            assignedTechUid: assignedUid,
+            assignedTechName: assignedName,
+            assignedTechEmail: assignedEmail,
+            status: row.status,
+            completionNotes: clampStr(row.completionNotes, MAX_LENGTHS.completionNotes),
+            supervisorEmails: b.supervisorEmails,
+            buildingMemberEmails: b.memberEmails,
+            updatedAt: serverTimestamp(),
+          });
+          updatedCount += 1;
+          opsInBatch += 1;
+        } else {
+          skippedDuplicates += 1;
+        }
+        continue;
+      }
+
+      existingScheduleById.set(docId, { id: docId } as TenantSchedule);
       batch.set(doc(db, 'tenant_schedules', docId), {
         id: docId,
         buildingId: b.id,
@@ -1828,15 +2385,9 @@ export async function bulkImportWorkbookData(
         tenantName: clampStr(row.tenantName, MAX_LENGTHS.techName),
         category: clampStr(row.category, MAX_LENGTHS.discipline) || 'General Maintenance',
         description: clampStr(row.description, MAX_LENGTHS.workDescription) || 'Scheduled unit maintenance',
-        assignedTechUid: clampStr(matchedTech?.authUid || '', MAX_LENGTHS.id),
-        assignedTechName: clampStr(
-          matchedTech ? matchedTech.name : row.assignedTechName || actorName,
-          MAX_LENGTHS.techName
-        ),
-        assignedTechEmail: clampStr(
-          matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
-          MAX_LENGTHS.email
-        ),
+        assignedTechUid: assignedUid,
+        assignedTechName: assignedName,
+        assignedTechEmail: assignedEmail,
         status: row.status,
         completionNotes: clampStr(row.completionNotes, MAX_LENGTHS.completionNotes),
         createdByUid: ctx.uid,
@@ -1861,17 +2412,104 @@ export async function bulkImportWorkbookData(
     completedOps += slice.length;
   }
 
+  // Stage 8: Urgent Alerts / Maintenance Notifications (create & update)
+  const existingNotifById = new Map<string, MaintenanceNotification>(
+    (ctx.existingNotifications || []).map((n) => [n.id, n])
+  );
+  for (let i = 0; i < notifRows.length; i += chunkSize) {
+    ctx.onProgress?.('Syncing urgent alerts...', completedOps, totalOps);
+    const slice = notifRows.slice(i, i + chunkSize);
+    const batch = writeBatch(db);
+    let opsInBatch = 0;
+
+    for (const row of slice) {
+      const b = buildingMap.get(row.buildingCode.toUpperCase());
+      if (!b) continue;
+      const existingN = row.id ? existingNotifById.get(row.id) : undefined;
+
+      if (existingN) {
+        if (row.action === 'update') {
+          const nextStatus = row.status === 'resolved' ? 'resolved' : 'active';
+          batch.update(doc(db, 'maintenance_notifications', existingN.id), {
+            buildingCode: b.code,
+            buildingName: b.name,
+            severity: row.severity,
+            category: clampStr(row.category, MAX_LENGTHS.discipline) || 'General Alert',
+            title: clampStr(row.title, MAX_LENGTHS.title),
+            message: clampStr(row.message, MAX_LENGTHS.complaint),
+            locationZone: clampStr(row.locationZone, MAX_LENGTHS.locationZone),
+            status: nextStatus,
+            resolvedByName:
+              nextStatus === 'resolved' ? existingN.resolvedByName || actorName : '',
+            resolvedAtIso:
+              nextStatus === 'resolved'
+                ? existingN.resolvedAtIso || new Date().toISOString()
+                : '',
+            expiresAtDate: clampStr(row.expiresAtDate, MAX_LENGTHS.dateStr),
+            supervisorEmails: b.supervisorEmails,
+            buildingMemberEmails: b.memberEmails,
+            updatedAt: serverTimestamp(),
+          });
+          updatedCount += 1;
+          opsInBatch += 1;
+        } else {
+          skippedDuplicates += 1;
+        }
+        continue;
+      }
+
+      const notifId = generateSafeId('ntf');
+      batch.set(doc(db, 'maintenance_notifications', notifId), {
+        id: notifId,
+        buildingId: b.id,
+        buildingCode: b.code,
+        buildingName: b.name,
+        severity: row.severity,
+        category: clampStr(row.category, MAX_LENGTHS.discipline) || 'General Alert',
+        title: clampStr(row.title, MAX_LENGTHS.title),
+        message: clampStr(row.message, MAX_LENGTHS.complaint),
+        locationZone: clampStr(row.locationZone, MAX_LENGTHS.locationZone),
+        status: 'active',
+        acknowledgedByEmails: [],
+        createdByUid: ctx.uid,
+        createdByName: actorName,
+        createdByEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+        resolvedByName: '',
+        resolvedAtIso: '',
+        expiresAtDate: clampStr(row.expiresAtDate, MAX_LENGTHS.dateStr),
+        supervisorEmails: b.supervisorEmails,
+        buildingMemberEmails: b.memberEmails,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      createdNotifications += 1;
+      opsInBatch += 1;
+    }
+
+    if (opsInBatch > 0) {
+      try {
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, 'maintenance_notifications');
+      }
+    }
+    completedOps += slice.length;
+  }
+
   ctx.onProgress?.('Import complete!', totalOps, totalOps);
 
   return {
     createdBuildings,
     createdTechnicians,
+    createdAssets,
     createdLogs,
     createdWorkLogs,
     createdOvertime,
     createdMeters,
     createdReadings,
     createdSchedules,
+    createdNotifications,
+    updatedCount,
     skippedDuplicates,
   };
 }

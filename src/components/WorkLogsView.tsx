@@ -719,7 +719,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-          <div className="relative flex-1 min-w-[220px] max-w-md">
+          <div className="relative flex-1 min-w-0 sm:min-w-[220px] w-full sm:w-auto max-w-md">
             <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -730,7 +730,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
             />
           </div>
 
-          <div className="flex items-center gap-4 text-xs">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4 text-xs">
             <label className="inline-flex items-center gap-2 text-slate-700 dark:text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
@@ -1258,9 +1258,9 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
       {editingLog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 overflow-y-auto">
           <div className={`w-full ${isSupervisor ? 'max-w-2xl' : 'max-w-lg'} bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden my-auto`}>
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-800">
-              <div>
-                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-200 dark:border-slate-800">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">
                   {isSupervisor ? 'Edit Work Log Record' : 'Update Job Status'} — {editingLog.buildingCode} · {editingLog.location}
                 </h3>
                 {isSupervisor && (

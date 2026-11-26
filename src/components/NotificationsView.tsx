@@ -669,7 +669,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             ))}
           </select>
 
-          <div className="relative min-w-[200px] flex-1 sm:flex-initial">
+          <div className="relative min-w-0 sm:min-w-[200px] w-full sm:w-auto flex-1 sm:flex-initial">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"

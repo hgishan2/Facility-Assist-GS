@@ -8,6 +8,8 @@ import {
 } from './operationsAnalytics';
 import {
   APPROVAL_STATUS_LABELS,
+  ApprovalStatus,
+  Asset,
   Building,
   clampStr,
   DEFAULT_METER_UNITS,
@@ -17,7 +19,10 @@ import {
   FREQUENCY_LABELS,
   generateSafeId,
   MaintenanceLog,
+  MaintenanceNotification,
   MAX_LENGTHS,
+  NotificationSeverity,
+  NotificationStatus,
   OUTCOME_LABELS,
   OvertimeCategoryType,
   OvertimeLog,
@@ -25,6 +30,7 @@ import {
   Technician,
   TenantSchedule,
   TenantScheduleStatus,
+  UserRole,
   UtilityMeter,
   UtilityMeterType,
   UtilityReading,
@@ -37,24 +43,52 @@ import {
 
 export interface ParsedBuildingRow {
   rowNum: number;
+  id?: string;
+  action?: 'create' | 'update';
   code: string;
   name: string;
   address: string;
   floorsCount: number;
   facilityManager: string;
   amcContractors: string[];
+  status?: 'active' | 'inactive';
 }
 
 export interface ParsedTechnicianRow {
   rowNum: number;
+  id?: string;
+  action?: 'create' | 'update';
+  role?: UserRole;
   name: string;
   badgeId: string;
+  username?: string;
   trade: string;
+  phone?: string;
+  email?: string;
+  status?: 'active' | 'inactive';
   buildingCode: string;
+  assignedBuildingCodes?: string[];
+}
+
+export interface ParsedAssetRow {
+  rowNum: number;
+  id?: string;
+  action?: 'create' | 'update';
+  buildingCode: string;
+  assetTag: string;
+  assetName: string;
+  discipline: string;
+  locationZone: string;
+  manufacturerModel: string;
+  serialNumber: string;
+  ppmFrequency: PpmFrequency;
+  status: 'active' | 'inactive';
 }
 
 export interface ParsedLogRow {
   rowNum: number;
+  id?: string;
+  action?: 'create' | 'update';
   buildingCode: string;
   entryType: EntryType;
   discipline: string;
@@ -64,17 +98,21 @@ export interface ParsedLogRow {
   title: string;
   workNotes: string;
   ppmFrequency: PpmFrequency;
+  nextDueDate?: string;
   amcContractor: string;
   scheduledDate: string;
   completedDate: string;
   outcome: WorkOutcome;
   partsUsed: string;
   laborHours: number;
-  approvalStatus: 'approved' | 'pending_approval';
+  approvalStatus: ApprovalStatus;
+  submittedByName?: string;
+  reviewNotes?: string;
 }
 
 export interface ParsedWorkLogRow {
   rowNum: number;
+  action?: 'create' | 'update';
   id: string;
   buildingCode: string;
   logDate: string;
@@ -84,7 +122,7 @@ export interface ParsedWorkLogRow {
   category: string;
   priority: WorkPriority;
   complaint: string;
-  action: string;
+  actionTaken: string;
   materials: string;
   receivedTime: string;
   startTime: string;
@@ -99,6 +137,7 @@ export interface ParsedWorkLogRow {
 
 export interface ParsedOvertimeRow {
   rowNum: number;
+  action?: 'create' | 'update';
   id: string;
   buildingCode: string;
   otDate: string;
@@ -110,20 +149,26 @@ export interface ParsedOvertimeRow {
   location: string;
   workDescription: string;
   technicianName: string;
+  approvalStatus?: 'pending_approval' | 'approved' | 'rejected';
+  reviewNotes?: string;
 }
 
 export interface ParsedMeterRow {
   rowNum: number;
+  id?: string;
+  action?: 'create' | 'update';
   buildingCode: string;
   meterType: UtilityMeterType;
   area: string;
   meterNo: string;
   accountNo: string;
   unit: string;
+  status?: 'active' | 'inactive';
 }
 
 export interface ParsedReadingRow {
   rowNum: number;
+  action?: 'create' | 'update';
   id: string;
   buildingCode: string;
   readingDate: string;
@@ -138,6 +183,7 @@ export interface ParsedReadingRow {
 
 export interface ParsedScheduleRow {
   rowNum: number;
+  action?: 'create' | 'update';
   id: string;
   buildingCode: string;
   scheduleDate: string;
@@ -151,28 +197,62 @@ export interface ParsedScheduleRow {
   completionNotes: string;
 }
 
+export interface ParsedNotificationRow {
+  rowNum: number;
+  id?: string;
+  action?: 'create' | 'update';
+  buildingCode: string;
+  severity: NotificationSeverity;
+  category: string;
+  title: string;
+  message: string;
+  locationZone: string;
+  status: NotificationStatus;
+  expiresAtDate: string;
+  createdByName: string;
+}
+
 export interface ImportDedupeContext {
   existingBuildings: Building[];
   existingTechnicians?: Technician[];
+  existingAssets?: Asset[];
+  existingLogs?: MaintenanceLog[];
   existingWorkLogs?: WorkLog[];
   existingOvertimeLogs?: OvertimeLog[];
   existingMeters?: UtilityMeter[];
   existingReadings?: UtilityReading[];
   existingSchedules?: TenantSchedule[];
+  existingNotifications?: MaintenanceNotification[];
 }
 
 export interface WorkbookImportPreview {
   buildingsToCreate: ParsedBuildingRow[];
   techniciansToCreate: ParsedTechnicianRow[];
+  assetsToCreate: ParsedAssetRow[];
   logsToCreate: ParsedLogRow[];
   workLogsToCreate: ParsedWorkLogRow[];
   overtimeToCreate: ParsedOvertimeRow[];
   metersToCreate: ParsedMeterRow[];
   readingsToCreate: ParsedReadingRow[];
   schedulesToCreate: ParsedScheduleRow[];
+  notificationsToCreate: ParsedNotificationRow[];
+  updateCount: number;
   skippedDuplicates: number;
   ignoredItems: string[];
   errors: string[];
+}
+
+export interface MasterTemplatePayload {
+  buildings: Building[];
+  technicians: Technician[];
+  assets?: Asset[];
+  utilityMeters?: UtilityMeter[];
+  logs?: MaintenanceLog[];
+  workLogs?: WorkLog[];
+  overtimeLogs?: OvertimeLog[];
+  utilityReadings?: UtilityReading[];
+  tenantSchedules?: TenantSchedule[];
+  notifications?: MaintenanceNotification[];
 }
 
 function normalizeEntryType(raw: string): EntryType | null {
@@ -208,6 +288,29 @@ function normalizeOutcome(raw: string): WorkOutcome {
   return 'operational';
 }
 
+function normalizeApprovalStatus(raw: string): ApprovalStatus {
+  const v = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (v.includes('reject')) return 'rejected';
+  if (v.includes('revision')) return 'revision_requested';
+  if (v.includes('pending')) return 'pending_approval';
+  return 'approved';
+}
+
+function normalizeActiveStatus(raw: string): 'active' | 'inactive' {
+  return raw.trim().toLowerCase() === 'inactive' ? 'inactive' : 'active';
+}
+
+function normalizeNotificationSeverity(raw: string): NotificationSeverity {
+  const v = raw.trim().toLowerCase();
+  if (v.includes('crit')) return 'critical';
+  if (v.includes('urg')) return 'urgent';
+  return 'advisory';
+}
+
+function normalizeNotificationStatus(raw: string): NotificationStatus {
+  return raw.trim().toLowerCase() === 'resolved' ? 'resolved' : 'active';
+}
+
 function normalizeExcelDate(val: unknown): string {
   if (typeof val === 'number' && val > 20000 && val < 90000) {
     const parsed = XLSX.SSF.parse_date_code(val);
@@ -227,131 +330,513 @@ function normalizeExcelDate(val: unknown): string {
   return s.slice(0, 20);
 }
 
-export function downloadImportTemplate(buildings: Building[], technicians: Technician[]): void {
+function normalizeExcelTime(val: unknown): string {
+  if (typeof val === 'number' && val >= 0 && val < 1) {
+    const totalMinutes = Math.round(val * 24 * 60);
+    const hh = String(Math.floor(totalMinutes / 60) % 24).padStart(2, '0');
+    const mm = String(totalMinutes % 60).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+  return cleanSingleLine(val, MAX_LENGTHS.timeStr);
+}
+
+export function downloadImportTemplate(
+  buildingsOrPayload: Building[] | MasterTemplatePayload,
+  techniciansArg: Technician[] = []
+): void {
+  const payload: MasterTemplatePayload = Array.isArray(buildingsOrPayload)
+    ? { buildings: buildingsOrPayload, technicians: techniciansArg }
+    : buildingsOrPayload;
+
+  const buildings = payload.buildings || [];
+  const technicians = payload.technicians || [];
+  const assets = payload.assets || [];
+  const utilityMeters = payload.utilityMeters || [];
+  const logs = payload.logs || [];
+  const workLogs = payload.workLogs || [];
+  const overtimeLogs = payload.overtimeLogs || [];
+  const utilityReadings = payload.utilityReadings || [];
+  const tenantSchedules = payload.tenantSchedules || [];
+  const notifications = payload.notifications || [];
+
+  const buildingCodeById = new Map<string, string>();
+  for (const b of buildings) {
+    buildingCodeById.set(b.id, b.code);
+  }
+
   const wb = XLSX.utils.book_new();
+  const today = new Date().toISOString().slice(0, 10);
+  const sampleCode = buildings[0]?.code || 'BLD-01';
 
   // Sheet 1: Instructions & Reference Values
-  const sampleCode = buildings[0]?.code || 'BLD-01';
-  const instructionsRows = [
-    ['Facility Assist Bulk Import Template — Instructions'],
+  const instructionsRows: unknown[][] = [
+    ['Facility Assist Master Data Workbook — Edit & Bulk Upload Guide'],
+    ['Generated On', new Date().toISOString().slice(0, 19).replace('T', ' ')],
     [''],
-    ['1. Optional Buildings Sheet', 'Use the "Buildings_Setup" sheet to add new buildings before importing logs.'],
-    ['2. Maintenance Logs Sheet', 'Fill in "Maintenance_Logs_Import" with In-House PPM, AMC PPM, Repair, or Upgradation rows.'],
-    ['3. Valid Entry Types', 'ppm_inhouse, ppm_amc, repair, upgradation'],
-    ['4. Valid PPM Frequencies', 'none, weekly, monthly, quarterly, semi_annual, annual'],
-    ['5. Valid Outcomes', 'operational, minor_observation, critical_fault'],
-    ['6. Valid Approval Statuses', 'approved, pending_approval'],
-    ['7. Date Format', 'YYYY-MM-DD (e.g., 2026-11-24)'],
-    ['8. Valid Disciplines', DISCIPLINE_OPTIONS.join(', ')],
+    ['HOW EDIT & RE-UPLOAD WORKS', 'RULES'],
+    [
+      '1. Update Existing Records',
+      'Keep the "ID" column untouched and edit any other fields on that row. When re-uploaded, only modified rows are updated in Firestore.',
+    ],
+    [
+      '2. Add New Records',
+      'Add a new row at the bottom of any tab and leave the "ID" column blank. A safe unique ID is generated automatically upon upload.',
+    ],
+    [
+      '3. Unchanged Rows',
+      'Existing rows you did not modify are automatically skipped without overwriting audit timestamps or auth links.',
+    ],
+    [
+      '4. Team Roster Accounts',
+      'Editing Name, Badge ID, Trade, Phone, Email, Status, or Assigned Building Codes updates roster & permissions safely. Passwords & Firebase Auth UIDs are never altered via Excel.',
+    ],
+    [
+      '5. Valid Maintenance Entry Types',
+      'ppm_inhouse, ppm_amc, repair, upgradation',
+    ],
+    [
+      '6. Valid PPM Frequencies',
+      'none, weekly, monthly, quarterly, semi_annual, annual',
+    ],
+    [
+      '7. Valid Maintenance Outcomes',
+      'operational, minor_observation, critical_fault',
+    ],
+    [
+      '8. Valid Approval Statuses',
+      'approved, pending_approval, revision_requested, rejected',
+    ],
+    [
+      '9. Valid Work Log Shifts / Priorities / Statuses',
+      'Shift: Day, Night | Priority: Normal, Urgent, Emergency | Status: Completed, Pending, On Hold',
+    ],
+    [
+      '10. Valid Overtime Categories',
+      'N, WO, PH, N. Shift',
+    ],
+    [
+      '11. Valid Meter Types',
+      'Electricity, Water, Chilled Water, Gas, Other',
+    ],
+    [
+      '12. Valid Schedule Statuses & Alert Severities',
+      'Schedule: Pending, In Progress, Completed, Cancelled | Alert Severity: critical, urgent, advisory | Alert Status: active, resolved',
+    ],
+    ['13. Date & Time Formats', 'Date: YYYY-MM-DD (e.g., 2026-11-24) | Time: HH:MM 24h (e.g., 08:30)'],
+    ['14. Standard Disciplines', DISCIPLINE_OPTIONS.join(', ')],
     [''],
-    ['Active Building Codes in Database', 'Building Name', 'AMC Contractors'],
-    ...buildings.map((b) => [b.code, b.name, b.amcContractors.join(', ')]),
-    [''],
-    ['Active Technicians', 'Email', 'Trade'],
-    ...technicians.map((t) => [t.name, t.email, t.trade]),
+    ['Current Portfolio Record Counts', 'Count'],
+    ['Buildings', buildings.length],
+    ['Team Roster', technicians.length],
+    ['Assets (QR Registry)', assets.length],
+    ['Utility Meters', utilityMeters.length],
+    ['Maintenance & PPM Logs', logs.length],
+    ['Daily Work Logs', workLogs.length],
+    ['Overtime Logs', overtimeLogs.length],
+    ['Utility Readings', utilityReadings.length],
+    ['Tenant Schedules', tenantSchedules.length],
+    ['Urgent Alerts', notifications.length],
   ];
   const wsInst = XLSX.utils.aoa_to_sheet(instructionsRows);
-  wsInst['!cols'] = [{ wch: 30 }, { wch: 68 }, { wch: 36 }];
+  wsInst['!cols'] = [{ wch: 36 }, { wch: 96 }];
   XLSX.utils.book_append_sheet(wb, wsInst, 'Instructions');
 
-  // Sheet 2: Buildings_Setup
-  const buildingsHeader = [
+  // Sheet 2: Buildings
+  const bldHeader = [
+    'ID',
     'Building Code*',
     'Building Name*',
     'Address',
     'Floors Count*',
     'Facility Manager',
     'AMC Contractors (comma-separated)',
+    'Status (active/inactive)',
   ];
-  const buildingsSample =
-    buildings.length === 0
-      ? [buildingsHeader, ['BLD-01', 'North Corporate Tower', '120 Harbor Plaza', 18, 'Facility Manager', 'CoolAir HVAC LLC, Otis Elevators']]
-      : [buildingsHeader];
-  const wsBld = XLSX.utils.aoa_to_sheet(buildingsSample);
-  wsBld['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 30 }, { wch: 14 }, { wch: 22 }, { wch: 38 }];
-  XLSX.utils.book_append_sheet(wb, wsBld, 'Buildings_Setup');
+  const bldRows =
+    buildings.length > 0
+      ? buildings.map((b) => [
+          b.id,
+          b.code,
+          b.name,
+          b.address,
+          b.floorsCount,
+          b.facilityManager,
+          b.amcContractors.join(', '),
+          b.status,
+        ])
+      : [['', 'BLD-01', 'North Corporate Tower', '120 Harbor Plaza', 18, 'Facility Manager', 'CoolAir HVAC LLC, Otis Elevators', 'active']];
+  const wsBld = XLSX.utils.aoa_to_sheet([bldHeader, ...bldRows]);
+  wsBld['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 26 }, { wch: 30 }, { wch: 14 }, { wch: 22 }, { wch: 36 }, { wch: 20 }];
+  XLSX.utils.book_append_sheet(wb, wsBld, 'Buildings');
 
-  // Sheet 3: Maintenance_Logs_Import
+  // Sheet 3: Team_Roster
+  const teamHeader = [
+    'ID',
+    'Role (technician/supervisor)',
+    'Full Name*',
+    'Badge / Emp ID*',
+    'Login Username',
+    'Trade / Designation',
+    'Phone',
+    'Email',
+    'Status (active/inactive)',
+    'Assigned Building Codes (comma-separated)',
+  ];
+  const teamRows = technicians.map((t) => [
+    t.id,
+    t.role,
+    t.name,
+    t.badgeId,
+    t.username || '',
+    t.trade,
+    t.phone || '',
+    t.email || '',
+    t.status,
+    (t.assignedBuildingIds || [])
+      .map((bid) => buildingCodeById.get(bid) || '')
+      .filter(Boolean)
+      .join(', '),
+  ]);
+  const wsTeam = XLSX.utils.aoa_to_sheet([teamHeader, ...teamRows]);
+  wsTeam['!cols'] = [
+    { wch: 22 }, { wch: 22 }, { wch: 26 }, { wch: 16 }, { wch: 18 },
+    { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 20 }, { wch: 34 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsTeam, 'Team_Roster');
+
+  // Sheet 4: Assets_QR
+  const assetHeader = [
+    'ID',
+    'Building Code*',
+    'Asset Tag*',
+    'Asset Name*',
+    'Discipline*',
+    'Location / Zone',
+    'Manufacturer / Model',
+    'Serial Number',
+    'PPM Frequency',
+    'Status (active/inactive)',
+  ];
+  const assetRows = assets.map((a) => [
+    a.id,
+    a.buildingCode,
+    a.assetTag,
+    a.assetName,
+    a.discipline,
+    a.locationZone,
+    a.manufacturerModel,
+    a.serialNumber,
+    a.ppmFrequency,
+    a.status,
+  ]);
+  const wsAssets = XLSX.utils.aoa_to_sheet([assetHeader, ...assetRows]);
+  wsAssets['!cols'] = [
+    { wch: 22 }, { wch: 15 }, { wch: 16 }, { wch: 26 }, { wch: 22 },
+    { wch: 22 }, { wch: 24 }, { wch: 20 }, { wch: 15 }, { wch: 20 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsAssets, 'Assets_QR');
+
+  // Sheet 5: Utility_Meters
+  const meterHeader = [
+    'ID',
+    'Building Code*',
+    'Meter Type*',
+    'Unit / Area*',
+    'Meter No*',
+    'Account No',
+    'Unit',
+    'Status (active/inactive)',
+  ];
+  const meterRows = utilityMeters.map((m) => [
+    m.id,
+    m.buildingCode,
+    m.meterType,
+    m.area,
+    m.meterNo,
+    m.accountNo,
+    m.unit,
+    m.status,
+  ]);
+  const wsMeters = XLSX.utils.aoa_to_sheet([meterHeader, ...meterRows]);
+  wsMeters['!cols'] = [
+    { wch: 22 }, { wch: 15 }, { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 18 }, { wch: 12 }, { wch: 20 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsMeters, 'Utility_Meters');
+
+  // Sheet 6: Maintenance_Logs
   const logsHeader = [
+    'ID',
     'Building Code*',
     'Entry Type*',
     'Discipline*',
     'Asset Name*',
     'Asset Tag',
-    'Location / Floor',
+    'Location / Zone',
     'Work Title*',
-    'Work Notes / Checklist Findings',
+    'Work Notes',
     'PPM Frequency',
+    'Next Due Date',
     'AMC Contractor',
-    'Scheduled Date (YYYY-MM-DD)',
-    'Completed Date* (YYYY-MM-DD)',
+    'Scheduled Date',
+    'Completed Date*',
     'Outcome',
     'Parts Used',
     'Labor Hours',
     'Approval Status',
+    'Submitted By Name',
+    'Review Notes',
   ];
-  const today = new Date().toISOString().slice(0, 10);
-  const sampleRows = [
-    logsHeader,
-    [
-      sampleCode,
-      'ppm_inhouse',
-      'HVAC & Chillers',
-      'AHU Unit 03',
-      'AHU-03',
-      'Level 4 Mechanical Room',
-      'Monthly Filter & Belt Inspection',
-      'Replaced pre-filters, checked belt tension and bearing temperature.',
-      'monthly',
-      '',
-      today,
-      today,
-      'operational',
-      '2x MERV-13 Pleated Filters',
-      2.5,
-      'approved',
-    ],
-    [
-      sampleCode,
-      'ppm_amc',
-      'Elevators & Escalators',
-      'Passenger Lift P2',
-      'LIFT-P2',
-      'Core Shaft B',
-      'Quarterly AMC Safety & Brake Check',
-      'Vendor completed door interlock calibration and emergency alarm check.',
-      'quarterly',
-      'Otis Elevators',
-      today,
-      today,
-      'operational',
-      'None',
-      3.0,
-      'approved',
-    ],
-  ];
-  const wsLogs = XLSX.utils.aoa_to_sheet(sampleRows);
+  const logRows =
+    logs.length > 0
+      ? logs.map((l) => [
+          l.id,
+          l.buildingCode,
+          l.entryType,
+          l.discipline,
+          l.assetName,
+          l.assetTag,
+          l.locationZone,
+          l.title,
+          l.workNotes,
+          l.ppmFrequency,
+          l.nextDueDate || '',
+          l.amcContractor || '',
+          l.scheduledDate || '',
+          l.completedDate,
+          l.outcome,
+          l.partsUsed || '',
+          l.laborHours,
+          l.approvalStatus,
+          l.submittedByName || '',
+          l.reviewNotes || '',
+        ])
+      : buildings.length === 0
+        ? [
+            [
+              '',
+              sampleCode,
+              'ppm_inhouse',
+              'HVAC & Chillers',
+              'AHU Unit 03',
+              'AHU-03',
+              'Level 4 Mechanical Room',
+              'Monthly Filter & Belt Inspection',
+              'Replaced pre-filters, checked belt tension and bearing temperature.',
+              'monthly',
+              '',
+              '',
+              today,
+              today,
+              'operational',
+              '2x MERV-13 Pleated Filters',
+              2.5,
+              'approved',
+              '',
+              '',
+            ],
+          ]
+        : [];
+  const wsLogs = XLSX.utils.aoa_to_sheet([logsHeader, ...logRows]);
   wsLogs['!cols'] = [
-    { wch: 16 },
-    { wch: 16 },
-    { wch: 24 },
-    { wch: 22 },
-    { wch: 14 },
-    { wch: 22 },
-    { wch: 32 },
-    { wch: 42 },
-    { wch: 15 },
-    { wch: 22 },
-    { wch: 22 },
-    { wch: 22 },
-    { wch: 18 },
-    { wch: 24 },
-    { wch: 12 },
-    { wch: 18 },
+    { wch: 22 }, { wch: 15 }, { wch: 15 }, { wch: 22 }, { wch: 22 },
+    { wch: 14 }, { wch: 20 }, { wch: 28 }, { wch: 36 }, { wch: 15 },
+    { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 18 },
+    { wch: 22 }, { wch: 12 }, { wch: 18 }, { wch: 22 }, { wch: 28 },
   ];
-  XLSX.utils.book_append_sheet(wb, wsLogs, 'Maintenance_Logs_Import');
+  XLSX.utils.book_append_sheet(wb, wsLogs, 'Maintenance_Logs');
 
-  XLSX.writeFile(wb, `Facility_Assist_Import_Template_${today}.xlsx`);
+  // Sheet 7: Work_Logs
+  const wlHeader = [
+    'ID',
+    'Building Code*',
+    'Log Date*',
+    'Shift',
+    'WO Number',
+    'Location / Unit*',
+    'Category*',
+    'Priority',
+    'Complaint*',
+    'Action Taken',
+    'Materials Used',
+    'Received Time',
+    'Start Time',
+    'Finish Time',
+    'Duration Hours',
+    'Status',
+    'Pending Reason',
+    'Remarks',
+    'Technician Name',
+    'Supervisor Name',
+  ];
+  const wlRows = workLogs.map((w) => [
+    w.id,
+    w.buildingCode,
+    w.logDate,
+    w.shift,
+    w.woNumber || '',
+    w.location,
+    w.category,
+    w.priority,
+    w.complaint,
+    w.action || '',
+    w.materials || '',
+    w.receivedTime || '',
+    w.startTime || '',
+    w.finishTime || '',
+    w.durationHours ?? 0,
+    w.status,
+    w.pendingReason || '',
+    w.remarks || '',
+    w.technicianName || '',
+    w.supervisorName || '',
+  ]);
+  const wsWl = XLSX.utils.aoa_to_sheet([wlHeader, ...wlRows]);
+  wsWl['!cols'] = [
+    { wch: 22 }, { wch: 15 }, { wch: 12 }, { wch: 10 }, { wch: 14 },
+    { wch: 20 }, { wch: 20 }, { wch: 12 }, { wch: 34 }, { wch: 34 },
+    { wch: 24 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
+    { wch: 12 }, { wch: 24 }, { wch: 28 }, { wch: 24 }, { wch: 22 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsWl, 'Work_Logs');
+
+  // Sheet 8: Overtime_Logs
+  const otHeader = [
+    'ID',
+    'Building Code*',
+    'OT Date*',
+    'From Time*',
+    'To Time*',
+    'Hours',
+    'OT Category (N/WO/PH/N. Shift)',
+    'Work Type',
+    'Location',
+    'Work Description',
+    'Technician Name',
+    'Approval Status',
+    'Review Notes',
+  ];
+  const otRows = overtimeLogs.map((o) => [
+    o.id,
+    o.buildingCode,
+    o.otDate,
+    o.fromTime,
+    o.toTime,
+    o.hours,
+    o.otCategoryType,
+    o.workType,
+    o.location,
+    o.workDescription,
+    o.technicianName,
+    o.approvalStatus,
+    o.reviewNotes || '',
+  ]);
+  const wsOt = XLSX.utils.aoa_to_sheet([otHeader, ...otRows]);
+  wsOt['!cols'] = [
+    { wch: 22 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+    { wch: 10 }, { wch: 24 }, { wch: 22 }, { wch: 20 }, { wch: 36 },
+    { wch: 24 }, { wch: 18 }, { wch: 26 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsOt, 'Overtime_Logs');
+
+  // Sheet 9: Utility_Readings
+  const rdHeader = [
+    'ID',
+    'Building Code*',
+    'Reading Date*',
+    'Meter Type',
+    'Area',
+    'Meter No*',
+    'Account No',
+    'Reading Value*',
+    'Notes',
+    'Technician Name',
+  ];
+  const rdRows = utilityReadings.map((r) => [
+    r.id,
+    r.buildingCode,
+    r.readingDate,
+    r.meterType,
+    r.area,
+    r.meterNo,
+    r.accountNo || '',
+    r.readingValue,
+    r.notes || '',
+    r.technicianName || '',
+  ]);
+  const wsRd = XLSX.utils.aoa_to_sheet([rdHeader, ...rdRows]);
+  wsRd['!cols'] = [
+    { wch: 22 }, { wch: 15 }, { wch: 14 }, { wch: 16 }, { wch: 20 },
+    { wch: 18 }, { wch: 18 }, { wch: 15 }, { wch: 28 }, { wch: 24 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsRd, 'Utility_Readings');
+
+  // Sheet 10: Tenant_Schedules
+  const schHeader = [
+    'ID',
+    'Building Code*',
+    'Schedule Date*',
+    'Time Slot',
+    'Unit / Location*',
+    'Tenant Name',
+    'Category',
+    'Description*',
+    'Assigned Technician',
+    'Status',
+    'Completion Notes',
+  ];
+  const schRows = tenantSchedules.map((s) => [
+    s.id,
+    s.buildingCode,
+    s.scheduleDate,
+    s.timeSlot || '',
+    s.unitOrLocation,
+    s.tenantName || '',
+    s.category,
+    s.description,
+    s.assignedTechName || '',
+    s.status,
+    s.completionNotes || '',
+  ]);
+  const wsSch = XLSX.utils.aoa_to_sheet([schHeader, ...schRows]);
+  wsSch['!cols'] = [
+    { wch: 22 }, { wch: 15 }, { wch: 14 }, { wch: 14 }, { wch: 20 },
+    { wch: 20 }, { wch: 20 }, { wch: 36 }, { wch: 24 }, { wch: 14 }, { wch: 30 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsSch, 'Tenant_Schedules');
+
+  // Sheet 11: Urgent_Alerts
+  const alertHeader = [
+    'ID',
+    'Building Code*',
+    'Severity (critical/urgent/advisory)',
+    'Category',
+    'Title*',
+    'Message*',
+    'Location / Zone',
+    'Status (active/resolved)',
+    'Expires Date (YYYY-MM-DD)',
+    'Created By Name',
+  ];
+  const alertRows = notifications.map((n) => [
+    n.id,
+    n.buildingCode,
+    n.severity,
+    n.category,
+    n.title,
+    n.message,
+    n.locationZone || '',
+    n.status,
+    n.expiresAtDate || '',
+    n.createdByName || '',
+  ]);
+  const wsAlerts = XLSX.utils.aoa_to_sheet([alertHeader, ...alertRows]);
+  wsAlerts['!cols'] = [
+    { wch: 22 }, { wch: 15 }, { wch: 28 }, { wch: 22 }, { wch: 28 },
+    { wch: 42 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsAlerts, 'Urgent_Alerts');
+
+  XLSX.writeFile(wb, `Facility_Assist_Master_Data_Template_${today}.xlsx`);
 }
 
 function sanitizeDocId(raw: unknown, prefix: string, used: Set<string>): string {
@@ -428,101 +913,463 @@ function normalizeScheduleStatus(raw: string): TenantScheduleStatus {
   return 'Pending';
 }
 
+function normalizeHeaderKey(h: unknown): string {
+  return String(h ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\*+/g, '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildColResolver(rawHeaders: string[]) {
+  const normHeaders = rawHeaders.map(normalizeHeaderKey);
+  return (...candidates: string[]): number => {
+    for (const c of candidates) {
+      const exactIdx = rawHeaders.indexOf(c);
+      if (exactIdx >= 0) return exactIdx;
+      const normIdx = normHeaders.indexOf(normalizeHeaderKey(c));
+      if (normIdx >= 0) return normIdx;
+    }
+    return -1;
+  };
+}
+
+function normStrEq(a: string | undefined, b: string | undefined): boolean {
+  return (a ?? '').trim() === (b ?? '').trim();
+}
+
+function normArrEq(a: string[] | undefined, b: string[] | undefined): boolean {
+  const arrA = (a || []).map((s) => s.trim()).filter(Boolean);
+  const arrB = (b || []).map((s) => s.trim()).filter(Boolean);
+  return arrA.length === arrB.length && arrA.every((v, i) => v === arrB[i]);
+}
+
 export function applyImportDeduplication(
   raw: WorkbookImportPreview,
   ctx: ImportDedupeContext
 ): WorkbookImportPreview {
-  const knownBuildingCodes = new Set(ctx.existingBuildings.map((b) => b.code.trim().toUpperCase()));
-  const existingTechBadges = new Set(
-    (ctx.existingTechnicians || []).map((t) => t.badgeId.trim().toUpperCase()).filter(Boolean)
+  const buildingById = new Map(ctx.existingBuildings.map((b) => [b.id, b]));
+  const buildingByCode = new Map(ctx.existingBuildings.map((b) => [b.code.trim().toUpperCase(), b]));
+
+  const techById = new Map((ctx.existingTechnicians || []).map((t) => [t.id, t]));
+  const techByBadge = new Map(
+    (ctx.existingTechnicians || [])
+      .filter((t) => t.badgeId)
+      .map((t) => [t.badgeId.trim().toUpperCase(), t])
   );
-  const existingWorkIds = new Set((ctx.existingWorkLogs || []).map((w) => w.id));
-  const existingOtIds = new Set((ctx.existingOvertimeLogs || []).map((o) => o.id));
-  const existingMeterKeys = new Set(
-    (ctx.existingMeters || []).map(
-      (m) => `${m.buildingCode.trim().toUpperCase()}::${m.meterNo.trim().toUpperCase()}`
-    )
+
+  const assetById = new Map((ctx.existingAssets || []).map((a) => [a.id, a]));
+  const assetByKey = new Map(
+    (ctx.existingAssets || []).map((a) => [
+      `${a.buildingCode.trim().toUpperCase()}::${a.assetTag.trim().toUpperCase()}`,
+      a,
+    ])
   );
-  const existingReadingIds = new Set((ctx.existingReadings || []).map((r) => r.id));
-  const existingScheduleIds = new Set((ctx.existingSchedules || []).map((s) => s.id));
+
+  const meterById = new Map((ctx.existingMeters || []).map((m) => [m.id, m]));
+  const meterByKey = new Map(
+    (ctx.existingMeters || []).map((m) => [
+      `${m.buildingCode.trim().toUpperCase()}::${m.meterNo.trim().toUpperCase()}`,
+      m,
+    ])
+  );
+
+  const logById = new Map((ctx.existingLogs || []).map((l) => [l.id, l]));
+  const workById = new Map((ctx.existingWorkLogs || []).map((w) => [w.id, w]));
+  const otById = new Map((ctx.existingOvertimeLogs || []).map((o) => [o.id, o]));
+  const readingById = new Map((ctx.existingReadings || []).map((r) => [r.id, r]));
+  const scheduleById = new Map((ctx.existingSchedules || []).map((s) => [s.id, s]));
+  const notifById = new Map((ctx.existingNotifications || []).map((n) => [n.id, n]));
 
   let skippedDuplicates = raw.skippedDuplicates || 0;
+  let updateCount = 0;
 
-  const buildingsToCreate = raw.buildingsToCreate.filter((b) => {
-    const k = b.code.trim().toUpperCase();
-    if (knownBuildingCodes.has(k)) {
+  // 1. Buildings (dedupe or mark update)
+  const seenBuildingCodes = new Set<string>();
+  const buildingsToCreate: ParsedBuildingRow[] = [];
+  for (const row of raw.buildingsToCreate) {
+    const code = row.code.trim().toUpperCase();
+    if (!code || seenBuildingCodes.has(code)) {
       skippedDuplicates += 1;
-      return false;
+      continue;
     }
-    knownBuildingCodes.add(k);
-    return true;
-  });
+    seenBuildingCodes.add(code);
+    const existing = (row.id ? buildingById.get(row.id) : undefined) || buildingByCode.get(code);
+    if (existing) {
+      const nextStatus = row.status || existing.status || 'active';
+      const changed =
+        !normStrEq(existing.code.toUpperCase(), code) ||
+        !normStrEq(existing.name, row.name) ||
+        !normStrEq(existing.address, row.address) ||
+        Number(existing.floorsCount) !== Number(row.floorsCount) ||
+        !normStrEq(existing.facilityManager, row.facilityManager) ||
+        !normArrEq(existing.amcContractors, row.amcContractors) ||
+        existing.status !== nextStatus;
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      buildingsToCreate.push({ ...row, id: existing.id, status: nextStatus, action: 'update' });
+      updateCount += 1;
+    } else {
+      buildingsToCreate.push({ ...row, action: 'create' });
+    }
+  }
 
-  const techniciansToCreate = raw.techniciansToCreate.filter((t) => {
-    const k = t.badgeId.trim().toUpperCase();
-    if (existingTechBadges.has(k)) {
-      skippedDuplicates += 1;
-      return false;
-    }
-    existingTechBadges.add(k);
-    return true;
-  });
+  // Build code->buildingId map including new buildings for comparing technician assignedBuildingIds
+  const codeToId = new Map<string, string>(
+    ctx.existingBuildings.map((b) => [b.code.trim().toUpperCase(), b.id])
+  );
 
-  const metersToCreate = raw.metersToCreate.filter((m) => {
-    const k = `${m.buildingCode.trim().toUpperCase()}::${m.meterNo.trim().toUpperCase()}`;
-    if (existingMeterKeys.has(k)) {
+  // 2. Team Roster
+  const seenTechKeys = new Set<string>();
+  const techniciansToCreate: ParsedTechnicianRow[] = [];
+  for (const row of raw.techniciansToCreate) {
+    const badge = row.badgeId.trim().toUpperCase();
+    if (!badge || seenTechKeys.has(badge)) {
       skippedDuplicates += 1;
-      return false;
+      continue;
     }
-    existingMeterKeys.add(k);
-    return true;
-  });
+    seenTechKeys.add(badge);
+    const existing = (row.id ? techById.get(row.id) : undefined) || techByBadge.get(badge);
+    if (existing) {
+      const desiredRole = row.role || existing.role;
+      const desiredStatus = row.status || existing.status;
+      const desiredCodes =
+        row.assignedBuildingCodes && row.assignedBuildingCodes.length > 0
+          ? row.assignedBuildingCodes
+          : row.buildingCode
+            ? [row.buildingCode]
+            : [];
+      const desiredBuildingIds = desiredCodes
+        .map((c) => codeToId.get(c.trim().toUpperCase()))
+        .filter((x): x is string => Boolean(x));
+      const buildingIdsChanged =
+        desiredCodes.length > 0 &&
+        (desiredBuildingIds.length !== desiredCodes.length ||
+          !normArrEq([...(existing.assignedBuildingIds || [])].sort(), [...desiredBuildingIds].sort()));
 
-  const workLogsToCreate = raw.workLogsToCreate.filter((w) => {
-    if (existingWorkIds.has(w.id)) {
-      skippedDuplicates += 1;
-      return false;
-    }
-    existingWorkIds.add(w.id);
-    return true;
-  });
+      const changed =
+        !normStrEq(existing.name, row.name) ||
+        !normStrEq(existing.badgeId.toUpperCase(), badge) ||
+        !normStrEq(existing.username || '', row.username || '') ||
+        !normStrEq(existing.trade, row.trade) ||
+        !normStrEq(existing.phone || '', row.phone || '') ||
+        !normStrEq((existing.email || '').toLowerCase(), (row.email || '').toLowerCase()) ||
+        existing.status !== desiredStatus ||
+        existing.role !== desiredRole ||
+        buildingIdsChanged;
 
-  const overtimeToCreate = raw.overtimeToCreate.filter((o) => {
-    if (existingOtIds.has(o.id)) {
-      skippedDuplicates += 1;
-      return false;
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      techniciansToCreate.push({ ...row, id: existing.id, action: 'update' });
+      updateCount += 1;
+    } else {
+      techniciansToCreate.push({ ...row, action: 'create' });
     }
-    existingOtIds.add(o.id);
-    return true;
-  });
+  }
 
-  const readingsToCreate = raw.readingsToCreate.filter((r) => {
-    if (existingReadingIds.has(r.id)) {
+  // 3. Assets
+  const seenAssetKeys = new Set<string>();
+  const assetsToCreate: ParsedAssetRow[] = [];
+  for (const row of raw.assetsToCreate || []) {
+    const naturalKey = `${row.buildingCode.trim().toUpperCase()}::${row.assetTag.trim().toUpperCase()}`;
+    const dedupeKey = row.id || naturalKey;
+    if (seenAssetKeys.has(dedupeKey)) {
       skippedDuplicates += 1;
-      return false;
+      continue;
     }
-    existingReadingIds.add(r.id);
-    return true;
-  });
+    seenAssetKeys.add(dedupeKey);
+    const existing = (row.id ? assetById.get(row.id) : undefined) || assetByKey.get(naturalKey);
+    if (existing) {
+      const changed =
+        !normStrEq(existing.buildingCode.toUpperCase(), row.buildingCode.toUpperCase()) ||
+        !normStrEq(existing.assetTag, row.assetTag) ||
+        !normStrEq(existing.assetName, row.assetName) ||
+        !normStrEq(existing.discipline, row.discipline) ||
+        !normStrEq(existing.locationZone, row.locationZone) ||
+        !normStrEq(existing.manufacturerModel, row.manufacturerModel) ||
+        !normStrEq(existing.serialNumber, row.serialNumber) ||
+        existing.ppmFrequency !== row.ppmFrequency ||
+        existing.status !== row.status;
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      assetsToCreate.push({ ...row, id: existing.id, action: 'update' });
+      updateCount += 1;
+    } else {
+      assetsToCreate.push({ ...row, action: 'create' });
+    }
+  }
 
-  const schedulesToCreate = raw.schedulesToCreate.filter((s) => {
-    if (existingScheduleIds.has(s.id)) {
+  // 4. Utility Meters
+  const seenMeterKeys = new Set<string>();
+  const metersToCreate: ParsedMeterRow[] = [];
+  for (const row of raw.metersToCreate) {
+    const naturalKey = `${row.buildingCode.trim().toUpperCase()}::${row.meterNo.trim().toUpperCase()}`;
+    const dedupeKey = row.id || naturalKey;
+    if (seenMeterKeys.has(dedupeKey)) {
       skippedDuplicates += 1;
-      return false;
+      continue;
     }
-    existingScheduleIds.add(s.id);
-    return true;
-  });
+    seenMeterKeys.add(dedupeKey);
+    const existing = (row.id ? meterById.get(row.id) : undefined) || meterByKey.get(naturalKey);
+    if (existing) {
+      const nextStatus = row.status || existing.status || 'active';
+      const changed =
+        existing.meterType !== row.meterType ||
+        !normStrEq(existing.area, row.area) ||
+        !normStrEq(existing.meterNo, row.meterNo) ||
+        !normStrEq(existing.accountNo, row.accountNo) ||
+        !normStrEq(existing.unit, row.unit) ||
+        existing.status !== nextStatus;
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      metersToCreate.push({ ...row, id: existing.id, status: nextStatus, action: 'update' });
+      updateCount += 1;
+    } else {
+      metersToCreate.push({ ...row, action: 'create' });
+    }
+  }
+
+  // 5. Maintenance Logs
+  const seenLogIds = new Set<string>();
+  const logsToCreate: ParsedLogRow[] = [];
+  for (const row of raw.logsToCreate) {
+    const existing = row.id ? logById.get(row.id) : undefined;
+    if (row.id && seenLogIds.has(row.id)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    if (row.id) seenLogIds.add(row.id);
+    if (existing) {
+      const changed =
+        !normStrEq(existing.buildingCode.toUpperCase(), row.buildingCode.toUpperCase()) ||
+        existing.entryType !== row.entryType ||
+        !normStrEq(existing.discipline, row.discipline) ||
+        !normStrEq(existing.assetName, row.assetName) ||
+        !normStrEq(existing.assetTag, row.assetTag) ||
+        !normStrEq(existing.locationZone, row.locationZone) ||
+        !normStrEq(existing.title, row.title) ||
+        !normStrEq(existing.workNotes, row.workNotes) ||
+        existing.ppmFrequency !== row.ppmFrequency ||
+        !normStrEq(existing.nextDueDate || '', row.nextDueDate ?? existing.nextDueDate ?? '') ||
+        !normStrEq(existing.amcContractor, row.amcContractor) ||
+        !normStrEq(existing.scheduledDate, row.scheduledDate) ||
+        !normStrEq(existing.completedDate, row.completedDate) ||
+        existing.outcome !== row.outcome ||
+        !normStrEq(existing.partsUsed, row.partsUsed) ||
+        round2(Number(existing.laborHours) || 0) !== round2(Number(row.laborHours) || 0) ||
+        existing.approvalStatus !== row.approvalStatus ||
+        (row.reviewNotes !== undefined && !normStrEq(existing.reviewNotes, row.reviewNotes));
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      logsToCreate.push({ ...row, id: existing.id, action: 'update' });
+      updateCount += 1;
+    } else {
+      logsToCreate.push({ ...row, action: 'create' });
+    }
+  }
+
+  // 6. Work Logs
+  const seenWorkIds = new Set<string>();
+  const workLogsToCreate: ParsedWorkLogRow[] = [];
+  for (const row of raw.workLogsToCreate) {
+    if (seenWorkIds.has(row.id)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    seenWorkIds.add(row.id);
+    const legacyAction = (row as { action?: unknown }).action;
+    const rowActionText =
+      row.actionTaken ??
+      (typeof legacyAction === 'string' && legacyAction !== 'create' && legacyAction !== 'update'
+        ? legacyAction
+        : '');
+    const existing = workById.get(row.id);
+    if (existing) {
+      const changed =
+        !normStrEq(existing.logDate, row.logDate) ||
+        existing.shift !== row.shift ||
+        !normStrEq(existing.woNumber, row.woNumber) ||
+        !normStrEq(existing.location, row.location) ||
+        !normStrEq(existing.category, row.category) ||
+        existing.priority !== row.priority ||
+        !normStrEq(existing.complaint, row.complaint) ||
+        !normStrEq(existing.action, rowActionText) ||
+        !normStrEq(existing.materials, row.materials) ||
+        !normStrEq(existing.receivedTime, row.receivedTime) ||
+        !normStrEq(existing.startTime, row.startTime) ||
+        !normStrEq(existing.finishTime, row.finishTime) ||
+        round2(Number(existing.durationHours) || 0) !== round2(Number(row.durationHours) || 0) ||
+        existing.status !== row.status ||
+        !normStrEq(existing.pendingReason, row.status === 'Completed' ? '' : row.pendingReason) ||
+        !normStrEq(existing.remarks, row.remarks) ||
+        !normStrEq(existing.technicianName, row.technicianName) ||
+        !normStrEq(existing.supervisorName, row.supervisorName);
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      workLogsToCreate.push({ ...row, actionTaken: rowActionText, action: 'update' });
+      updateCount += 1;
+    } else {
+      workLogsToCreate.push({ ...row, actionTaken: rowActionText, action: 'create' });
+    }
+  }
+
+  // 7. Overtime Logs
+  const seenOtIds = new Set<string>();
+  const overtimeToCreate: ParsedOvertimeRow[] = [];
+  for (const row of raw.overtimeToCreate) {
+    if (seenOtIds.has(row.id)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    seenOtIds.add(row.id);
+    const existing = otById.get(row.id);
+    if (existing) {
+      const nextStatus = row.approvalStatus || existing.approvalStatus;
+      const nextNotes = row.reviewNotes !== undefined ? row.reviewNotes : existing.reviewNotes;
+      const changed =
+        !normStrEq(existing.otDate, row.otDate) ||
+        !normStrEq(existing.fromTime, row.fromTime) ||
+        !normStrEq(existing.toTime, row.toTime) ||
+        round2(Number(existing.hours) || 0) !== round2(Number(row.hours) || 0) ||
+        existing.otCategoryType !== row.otCategoryType ||
+        !normStrEq(existing.workType, row.workType) ||
+        !normStrEq(existing.location, row.location) ||
+        !normStrEq(existing.workDescription, row.workDescription) ||
+        !normStrEq(existing.technicianName, row.technicianName) ||
+        existing.approvalStatus !== nextStatus ||
+        !normStrEq(existing.reviewNotes, nextNotes);
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      overtimeToCreate.push({
+        ...row,
+        approvalStatus: nextStatus,
+        reviewNotes: nextNotes,
+        action: 'update',
+      });
+      updateCount += 1;
+    } else {
+      overtimeToCreate.push({ ...row, action: 'create' });
+    }
+  }
+
+  // 8. Utility Readings
+  const seenReadingIds = new Set<string>();
+  const readingsToCreate: ParsedReadingRow[] = [];
+  for (const row of raw.readingsToCreate) {
+    if (seenReadingIds.has(row.id)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    seenReadingIds.add(row.id);
+    const existing = readingById.get(row.id);
+    if (existing) {
+      const changed =
+        !normStrEq(existing.readingDate, row.readingDate) ||
+        round2(Number(existing.readingValue) || 0) !== round2(Number(row.readingValue) || 0) ||
+        !normStrEq(existing.notes, row.notes) ||
+        !normStrEq(existing.technicianName, row.technicianName);
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      readingsToCreate.push({ ...row, action: 'update' });
+      updateCount += 1;
+    } else {
+      readingsToCreate.push({ ...row, action: 'create' });
+    }
+  }
+
+  // 9. Tenant Schedules
+  const seenScheduleIds = new Set<string>();
+  const schedulesToCreate: ParsedScheduleRow[] = [];
+  for (const row of raw.schedulesToCreate) {
+    if (seenScheduleIds.has(row.id)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    seenScheduleIds.add(row.id);
+    const existing = scheduleById.get(row.id);
+    if (existing) {
+      const changed =
+        !normStrEq(existing.scheduleDate, row.scheduleDate) ||
+        !normStrEq(existing.timeSlot, row.timeSlot) ||
+        !normStrEq(existing.unitOrLocation, row.unitOrLocation) ||
+        !normStrEq(existing.tenantName, row.tenantName) ||
+        !normStrEq(existing.category, row.category) ||
+        !normStrEq(existing.description, row.description) ||
+        !normStrEq(existing.assignedTechName, row.assignedTechName) ||
+        existing.status !== row.status ||
+        !normStrEq(existing.completionNotes, row.completionNotes);
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      schedulesToCreate.push({ ...row, action: 'update' });
+      updateCount += 1;
+    } else {
+      schedulesToCreate.push({ ...row, action: 'create' });
+    }
+  }
+
+  // 10. Urgent Alerts
+  const seenNotifIds = new Set<string>();
+  const notificationsToCreate: ParsedNotificationRow[] = [];
+  for (const row of raw.notificationsToCreate || []) {
+    if (row.id && seenNotifIds.has(row.id)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    if (row.id) seenNotifIds.add(row.id);
+    const existing = row.id ? notifById.get(row.id) : undefined;
+    if (existing) {
+      const changed =
+        !normStrEq(existing.buildingCode.toUpperCase(), row.buildingCode.toUpperCase()) ||
+        existing.severity !== row.severity ||
+        !normStrEq(existing.category, row.category) ||
+        !normStrEq(existing.title, row.title) ||
+        !normStrEq(existing.message, row.message) ||
+        !normStrEq(existing.locationZone, row.locationZone) ||
+        existing.status !== row.status ||
+        !normStrEq(existing.expiresAtDate, row.expiresAtDate);
+      if (!changed) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      notificationsToCreate.push({ ...row, id: existing.id, action: 'update' });
+      updateCount += 1;
+    } else {
+      notificationsToCreate.push({ ...row, action: 'create' });
+    }
+  }
 
   return {
     buildingsToCreate,
     techniciansToCreate,
-    logsToCreate: raw.logsToCreate,
+    assetsToCreate,
+    logsToCreate,
     workLogsToCreate,
     overtimeToCreate,
     metersToCreate,
     readingsToCreate,
     schedulesToCreate,
+    notificationsToCreate,
+    updateCount,
     skippedDuplicates,
     ignoredItems: raw.ignoredItems,
     errors: raw.errors,
@@ -537,12 +1384,14 @@ export async function parseImportFiles(
   const ignoredItems: string[] = [];
   const buildingsToCreate: ParsedBuildingRow[] = [];
   const techniciansToCreate: ParsedTechnicianRow[] = [];
+  const assetsToCreate: ParsedAssetRow[] = [];
   const logsToCreate: ParsedLogRow[] = [];
   const workLogsToCreate: ParsedWorkLogRow[] = [];
   const overtimeToCreate: ParsedOvertimeRow[] = [];
   const metersToCreate: ParsedMeterRow[] = [];
   const readingsToCreate: ParsedReadingRow[] = [];
   const schedulesToCreate: ParsedScheduleRow[] = [];
+  const notificationsToCreate: ParsedNotificationRow[] = [];
 
   const knownCodes = new Set(context.existingBuildings.map((b) => b.code.trim().toUpperCase()));
   const defaultBuildingCode = context.existingBuildings[0]?.code.trim().toUpperCase() || 'GST1';
@@ -563,96 +1412,197 @@ export async function parseImportFiles(
       const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' });
       const nonEmptyRows = aoa.filter((r) => r && r.some((c) => String(c ?? '').trim() !== ''));
       if (nonEmptyRows.length <= 1) {
-        ignoredItems.push(`${file.name} (${sheetName}) — empty worksheet`);
+        if (!sheetName.toLowerCase().includes('instruction')) {
+          ignoredItems.push(`${file.name} (${sheetName}) — no data rows`);
+        }
         continue;
       }
 
       const rawHeaders = (aoa[0] || []).map((h) => String(h ?? '').trim().toLowerCase());
+      const normHeaders = rawHeaders.map(normalizeHeaderKey);
       const headerSet = new Set(rawHeaders.filter(Boolean));
+      const normHeaderSet = new Set(normHeaders.filter(Boolean));
+      const col = buildColResolver(rawHeaders);
       const sheetLower = sheetName.toLowerCase();
       const fileLower = file.name.toLowerCase();
       const label = files.length > 1 ? `${file.name} [${sheetName}]` : sheetName;
 
-      // 1. Buildings_Setup
+      if (sheetLower.includes('instruction')) {
+        continue;
+      }
+
+      // 1. Buildings (Master template OR Buildings_Setup)
       if (
-        sheetLower.includes('building') ||
-        (headerSet.has('building code*') && headerSet.has('building name*'))
+        sheetLower === 'buildings' ||
+        sheetLower.includes('buildings_setup') ||
+        (normHeaderSet.has('building code') && normHeaderSet.has('building name'))
       ) {
+        const iId = col('id');
+        const iCode = col('building code');
+        const iName = col('building name');
+        const iAddr = col('address');
+        const iFloors = col('floors count', 'floors');
+        const iFm = col('facility manager');
+        const iAmc = col('amc contractors');
+        const iStatus = col('status');
+
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
           if (!r || r.every((c) => String(c ?? '').trim() === '')) continue;
-          const code = clampStr(r[0], MAX_LENGTHS.buildingCode).toUpperCase();
-          const name = clampStr(r[1], MAX_LENGTHS.buildingName);
+          const code = clampStr(r[iCode >= 0 ? iCode : 0], MAX_LENGTHS.buildingCode).toUpperCase();
+          const name = clampStr(r[iName >= 0 ? iName : 1], MAX_LENGTHS.buildingName);
           if (!code || !name) {
             errors.push(`${label} Row ${i + 1}: Building Code and Building Name are required.`);
             continue;
           }
-          if (knownCodes.has(code)) continue;
-          const floorsRaw = Number(r[3] ?? 1);
+          const floorsRaw = Number(r[iFloors >= 0 ? iFloors : 3] ?? 1);
           const floorsCount =
             Number.isFinite(floorsRaw) && floorsRaw >= 1 ? Math.min(200, Math.round(floorsRaw)) : 1;
-          const contractors = String(r[5] ?? '')
+          const contractors = String(r[iAmc >= 0 ? iAmc : 5] ?? '')
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
             .slice(0, 20);
           buildingsToCreate.push({
             rowNum: i + 1,
+            id: iId >= 0 ? clampStr(r[iId], MAX_LENGTHS.id) : undefined,
             code,
             name,
-            address: clampStr(r[2], MAX_LENGTHS.address),
+            address: clampStr(r[iAddr >= 0 ? iAddr : 2], MAX_LENGTHS.address),
             floorsCount,
-            facilityManager: clampStr(r[4], MAX_LENGTHS.facilityManager),
+            facilityManager: clampStr(r[iFm >= 0 ? iFm : 4], MAX_LENGTHS.facilityManager),
             amcContractors: contractors,
+            status: iStatus >= 0 ? normalizeActiveStatus(String(r[iStatus] ?? 'active')) : 'active',
           });
           knownCodes.add(code);
         }
         continue;
       }
 
-      // 2. Legacy Team / Lists sheet (exclude sensitive PIN / Admin PIN columns)
+      // 2. Team_Roster (Master template) OR Legacy Lists sheet
       if (
+        sheetLower === 'team_roster' ||
+        (normHeaderSet.has('full name') && normHeaderSet.has('badge / emp id')) ||
         (headerSet.has('technicians') && (headerSet.has('emp code') || headerSet.has('designation'))) ||
         sheetLower === 'lists'
       ) {
-        const idxName = rawHeaders.indexOf('technicians');
-        const idxEmp = rawHeaders.indexOf('emp code');
-        const idxDesig = rawHeaders.indexOf('designation');
         if (headerSet.has('pin') || headerSet.has('admin pin')) {
           ignoredItems.push(`${label}: PIN & Admin PIN columns ignored (legacy credentials excluded)`);
         }
+        const iId = col('id');
+        const iRole = col('role');
+        const iName = col('full name', 'technicians');
+        const iBadge = col('badge / emp id', 'emp code');
+        const iUser = col('login username', 'username');
+        const iTrade = col('trade / designation', 'designation');
+        const iPhone = col('phone');
+        const iEmail = col('email');
+        const iStatus = col('status');
+        const iAssigned = col('assigned building codes', 'assigned buildings');
+
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
           if (!r || r.every((c) => String(c ?? '').trim() === '')) continue;
-          const techName = cleanSingleLine(r[idxName >= 0 ? idxName : 0], MAX_LENGTHS.techName);
-          const badgeId = cleanSingleLine(r[idxEmp >= 0 ? idxEmp : 4], MAX_LENGTHS.badgeId).toUpperCase();
-          const trade = cleanSingleLine(r[idxDesig >= 0 ? idxDesig : 5], MAX_LENGTHS.trade) || 'General Technician';
+          const techName = cleanSingleLine(r[iName >= 0 ? iName : 0], MAX_LENGTHS.techName);
+          const badgeId = cleanSingleLine(r[iBadge >= 0 ? iBadge : 4], MAX_LENGTHS.badgeId).toUpperCase();
+          const trade =
+            cleanSingleLine(r[iTrade >= 0 ? iTrade : 5], MAX_LENGTHS.trade) || 'General Technician';
           if (!techName || !badgeId) continue;
+
+          const rawRole = iRole >= 0 ? String(r[iRole] ?? '').trim().toLowerCase() : 'technician';
+          const role: UserRole =
+            rawRole === 'admin' ? 'admin' : rawRole === 'supervisor' ? 'supervisor' : 'technician';
+          const assignedCodes =
+            iAssigned >= 0
+              ? String(r[iAssigned] ?? '')
+                  .split(',')
+                  .map((s) => s.trim().toUpperCase())
+                  .filter(Boolean)
+              : [defaultBuildingCode];
+
           techniciansToCreate.push({
             rowNum: i + 1,
+            id: iId >= 0 ? clampStr(r[iId], MAX_LENGTHS.id) : undefined,
+            role,
             name: techName,
             badgeId,
+            username: iUser >= 0 ? clampStr(r[iUser], MAX_LENGTHS.username) : undefined,
             trade,
-            buildingCode: defaultBuildingCode,
+            phone: iPhone >= 0 ? clampStr(r[iPhone], MAX_LENGTHS.phone) : '',
+            email: iEmail >= 0 ? clampStr(r[iEmail], MAX_LENGTHS.email) : '',
+            status: iStatus >= 0 ? normalizeActiveStatus(String(r[iStatus] ?? 'active')) : 'active',
+            buildingCode: assignedCodes[0] || defaultBuildingCode,
+            assignedBuildingCodes: assignedCodes,
           });
         }
         continue;
       }
 
-      // 3. Utility Meters sheet
+      // 3. Assets_QR (Master template)
       if (
+        sheetLower === 'assets_qr' ||
+        (normHeaderSet.has('asset tag') && normHeaderSet.has('asset name'))
+      ) {
+        const iId = col('id');
+        const iBld = col('building code');
+        const iTag = col('asset tag');
+        const iName = col('asset name');
+        const iDisc = col('discipline');
+        const iLoc = col('location / zone', 'location');
+        const iModel = col('manufacturer / model', 'model');
+        const iSerial = col('serial number');
+        const iFreq = col('ppm frequency');
+        const iStat = col('status');
+
+        for (let i = 1; i < aoa.length; i++) {
+          const r = aoa[i];
+          if (!r || r.every((c) => String(c ?? '').trim() === '')) continue;
+          const bCode =
+            (iBld >= 0 ? cleanSingleLine(r[iBld], MAX_LENGTHS.buildingCode).toUpperCase() : '') ||
+            defaultBuildingCode;
+          if (!knownCodes.has(bCode)) pendingAutoBuildings.add(bCode);
+          const assetTag = cleanSingleLine(r[iTag], MAX_LENGTHS.assetTag);
+          const assetName = cleanSingleLine(r[iName], MAX_LENGTHS.assetName);
+          if (!assetTag || !assetName) {
+            errors.push(`${label} Row ${i + 1}: Asset Tag and Asset Name are required.`);
+            continue;
+          }
+          assetsToCreate.push({
+            rowNum: i + 1,
+            id: iId >= 0 ? clampStr(r[iId], MAX_LENGTHS.id) : undefined,
+            buildingCode: bCode,
+            assetTag,
+            assetName,
+            discipline:
+              (iDisc >= 0 ? cleanSingleLine(r[iDisc], MAX_LENGTHS.discipline) : '') || 'General MEP',
+            locationZone:
+              iLoc >= 0 ? cleanSingleLine(r[iLoc], MAX_LENGTHS.locationZone) : '',
+            manufacturerModel:
+              iModel >= 0 ? cleanSingleLine(r[iModel], MAX_LENGTHS.manufacturerModel) : '',
+            serialNumber:
+              iSerial >= 0 ? cleanSingleLine(r[iSerial], MAX_LENGTHS.serialNumber) : '',
+            ppmFrequency: normalizeFrequency(iFreq >= 0 ? String(r[iFreq] ?? 'none') : 'none'),
+            status: iStat >= 0 ? normalizeActiveStatus(String(r[iStat] ?? 'active')) : 'active',
+          });
+        }
+        continue;
+      }
+
+      // 4. Utility Meters (Master template OR Legacy Meters CSV)
+      if (
+        sheetLower === 'utility_meters' ||
+        (normHeaderSet.has('meter type') && normHeaderSet.has('meter no')) ||
         (headerSet.has('meter no') && headerSet.has('unit/area') && !headerSet.has('reading')) ||
         (headerSet.has('meterno') && !headerSet.has('readingvalue') && !headerSet.has('reading'))
       ) {
-        const col = (name: string, fb: number) => {
-          const idx = rawHeaders.indexOf(name);
-          return idx >= 0 ? idx : fb;
-        };
-        const iType = col('type', 0);
-        const iArea = col('unit/area', 1);
-        const iMeter = col('meter no', 2);
-        const iAcct = col('account no', 3);
-        const iBld = rawHeaders.indexOf('building');
+        const iId = col('id');
+        const iBld = col('building code', 'building');
+        const iType = col('meter type', 'type');
+        const iArea = col('unit / area', 'unit/area', 'area');
+        const iMeter = col('meter no', 'meterno');
+        const iAcct = col('account no', 'accountno');
+        const iUnit = col('unit');
+        const iStatus = col('status');
 
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
@@ -662,46 +1612,54 @@ export async function parseImportFiles(
               ? cleanSingleLine(r[iBld], MAX_LENGTHS.buildingCode).toUpperCase() || defaultBuildingCode
               : defaultBuildingCode;
           if (!knownCodes.has(bCode)) pendingAutoBuildings.add(bCode);
-          const meterType = normalizeMeterType(String(r[iType] ?? 'Other'));
-          const area = cleanSingleLine(r[iArea], MAX_LENGTHS.locationZone) || 'Common';
-          const meterNo = cleanSingleLine(r[iMeter], MAX_LENGTHS.meterNo);
-          const accountNo = cleanSingleLine(r[iAcct], MAX_LENGTHS.accountNo);
+          const meterType = normalizeMeterType(String(r[iType >= 0 ? iType : 0] ?? 'Other'));
+          const area = cleanSingleLine(r[iArea >= 0 ? iArea : 1], MAX_LENGTHS.locationZone) || 'Common';
+          const meterNo = cleanSingleLine(r[iMeter >= 0 ? iMeter : 2], MAX_LENGTHS.meterNo);
+          const accountNo = iAcct >= 0 ? cleanSingleLine(r[iAcct], MAX_LENGTHS.accountNo) : '';
           if (!meterNo) continue;
+          const unit =
+            (iUnit >= 0 ? cleanSingleLine(r[iUnit], MAX_LENGTHS.meterUnit) : '') ||
+            DEFAULT_METER_UNITS[meterType];
           metersToCreate.push({
             rowNum: i + 1,
+            id: iId >= 0 ? clampStr(r[iId], MAX_LENGTHS.id) : undefined,
             buildingCode: bCode,
             meterType,
             area,
             meterNo,
             accountNo,
-            unit: DEFAULT_METER_UNITS[meterType],
+            unit,
+            status: iStatus >= 0 ? normalizeActiveStatus(String(r[iStatus] ?? 'active')) : 'active',
           });
         }
         continue;
       }
 
-      // 4. Daily Work Logs (Complaint / Action / Shift)
-      if (headerSet.has('complaint') && headerSet.has('logdate')) {
-        const idx = (name: string) => rawHeaders.indexOf(name);
-        const iId = idx('id');
-        const iBld = idx('building');
-        const iDate = idx('logdate');
-        const iSup = idx('supervisor');
-        const iShift = idx('shift');
-        const iWo = idx('wo');
-        const iLoc = idx('location');
-        const iComp = idx('complaint');
-        const iTech = idx('technician');
-        const iAct = idx('action');
-        const iCat = idx('category');
-        const iPrio = idx('priority');
-        const iRecv = idx('received');
-        const iStart = idx('start');
-        const iFin = idx('finish');
-        const iMat = idx('materials');
-        const iStat = idx('status');
-        const iPend = idx('pending');
-        const iRem = idx('remarks');
+      // 5. Daily Work Logs (Master Work_Logs OR Legacy Logs CSV)
+      if (
+        sheetLower === 'work_logs' ||
+        (normHeaderSet.has('complaint') && (normHeaderSet.has('logdate') || normHeaderSet.has('log date')))
+      ) {
+        const iId = col('id');
+        const iBld = col('building code', 'building');
+        const iDate = col('log date', 'logdate');
+        const iSup = col('supervisor name', 'supervisor');
+        const iShift = col('shift');
+        const iWo = col('wo number', 'wo');
+        const iLoc = col('location / unit', 'location');
+        const iComp = col('complaint');
+        const iTech = col('technician name', 'technician');
+        const iAct = col('action taken', 'action');
+        const iCat = col('category');
+        const iPrio = col('priority');
+        const iRecv = col('received time', 'received');
+        const iStart = col('start time', 'start');
+        const iFin = col('finish time', 'finish');
+        const iDur = col('duration hours');
+        const iMat = col('materials used', 'materials');
+        const iStat = col('status');
+        const iPend = col('pending reason', 'pending');
+        const iRem = col('remarks');
 
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
@@ -712,10 +1670,16 @@ export async function parseImportFiles(
           if (!knownCodes.has(bCode)) pendingAutoBuildings.add(bCode);
           const supName = iSup >= 0 ? cleanSingleLine(r[iSup], MAX_LENGTHS.techName) : '';
           if (supName && !inferredSupervisor) inferredSupervisor = supName;
-          const recv = iRecv >= 0 ? cleanSingleLine(r[iRecv], MAX_LENGTHS.timeStr) : '';
-          const start = iStart >= 0 ? cleanSingleLine(r[iStart], MAX_LENGTHS.timeStr) : '';
-          const finish = iFin >= 0 ? cleanSingleLine(r[iFin], MAX_LENGTHS.timeStr) : '';
+          const recv = iRecv >= 0 ? normalizeExcelTime(r[iRecv]) : '';
+          const start = iStart >= 0 ? normalizeExcelTime(r[iStart]) : '';
+          const finish = iFin >= 0 ? normalizeExcelTime(r[iFin]) : '';
           const status = normalizeWorkStatus(iStat >= 0 ? String(r[iStat] ?? '') : 'Pending');
+          const actionText = iAct >= 0 ? cleanSingleLine(r[iAct], MAX_LENGTHS.action) : '';
+          const explicitDur = iDur >= 0 && String(r[iDur] ?? '').trim() !== '' ? Number(r[iDur]) : NaN;
+          const durationHours =
+            Number.isFinite(explicitDur) && explicitDur >= 0
+              ? round2(Math.min(48, explicitDur))
+              : computeWorkLogDurationHours(recv, start, finish);
 
           workLogsToCreate.push({
             rowNum: i + 1,
@@ -728,12 +1692,12 @@ export async function parseImportFiles(
             category: (iCat >= 0 ? cleanSingleLine(r[iCat], MAX_LENGTHS.discipline) : '') || 'General Maintenance',
             priority: normalizeWorkPriority(iPrio >= 0 ? String(r[iPrio] ?? '') : 'Normal'),
             complaint: (iComp >= 0 ? cleanSingleLine(r[iComp], MAX_LENGTHS.complaint) : '') || 'Maintenance work',
-            action: iAct >= 0 ? cleanSingleLine(r[iAct], MAX_LENGTHS.action) : '',
+            actionTaken: actionText,
             materials: iMat >= 0 ? cleanSingleLine(r[iMat], MAX_LENGTHS.materials) : '',
             receivedTime: recv,
             startTime: start,
             finishTime: finish,
-            durationHours: computeWorkLogDurationHours(recv, start, finish),
+            durationHours,
             status,
             pendingReason: status === 'Completed' || iPend < 0 ? '' : cleanSingleLine(r[iPend], MAX_LENGTHS.pendingReason),
             remarks: iRem >= 0 ? cleanSingleLine(r[iRem], MAX_LENGTHS.remarks) : '',
@@ -744,19 +1708,25 @@ export async function parseImportFiles(
         continue;
       }
 
-      // 5. Overtime Sheet
-      if (headerSet.has('otdate') && (headerSet.has('otcategorytype') || headerSet.has('from'))) {
-        const idx = (name: string) => rawHeaders.indexOf(name);
-        const iId = idx('id');
-        const iTech = idx('technician');
-        const iDate = idx('otdate');
-        const iFrom = idx('from');
-        const iTo = idx('to');
-        const iType = idx('type');
-        const iLoc = idx('location');
-        const iWork = idx('work');
-        const iCat = idx('otcategorytype');
-        const iBld = idx('building');
+      // 6. Overtime Logs (Master Overtime_Logs OR Legacy Overtime CSV)
+      if (
+        sheetLower === 'overtime_logs' ||
+        ((normHeaderSet.has('ot date') || headerSet.has('otdate')) &&
+          (normHeaderSet.has('from time') || headerSet.has('from') || headerSet.has('otcategorytype')))
+      ) {
+        const iId = col('id');
+        const iTech = col('technician name', 'technician');
+        const iDate = col('ot date', 'otdate');
+        const iFrom = col('from time', 'from');
+        const iTo = col('to time', 'to');
+        const iHours = col('hours');
+        const iType = col('work type', 'type');
+        const iLoc = col('location');
+        const iWork = col('work description', 'work');
+        const iCat = col('ot category', 'otcategorytype');
+        const iBld = col('building code', 'building');
+        const iApp = col('approval status');
+        const iRev = col('review notes');
 
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
@@ -765,8 +1735,20 @@ export async function parseImportFiles(
             (iBld >= 0 ? cleanSingleLine(r[iBld], MAX_LENGTHS.buildingCode).toUpperCase() : '') ||
             defaultBuildingCode;
           if (!knownCodes.has(bCode)) pendingAutoBuildings.add(bCode);
-          const fromTime = (iFrom >= 0 ? cleanSingleLine(r[iFrom], MAX_LENGTHS.timeStr) : '') || '00:00';
-          const toTime = (iTo >= 0 ? cleanSingleLine(r[iTo], MAX_LENGTHS.timeStr) : '') || '00:00';
+          const fromTime = (iFrom >= 0 ? normalizeExcelTime(r[iFrom]) : '') || '00:00';
+          const toTime = (iTo >= 0 ? normalizeExcelTime(r[iTo]) : '') || '00:00';
+          const explicitH = iHours >= 0 && String(r[iHours] ?? '').trim() !== '' ? Number(r[iHours]) : NaN;
+          const hours =
+            Number.isFinite(explicitH) && explicitH >= 0
+              ? round2(Math.min(24, explicitH))
+              : calculateTimeHours(fromTime, toTime);
+          const rawApp = iApp >= 0 ? String(r[iApp] ?? '').trim().toLowerCase() : 'approved';
+          const approvalStatus: 'pending_approval' | 'approved' | 'rejected' =
+            rawApp.includes('reject')
+              ? 'rejected'
+              : rawApp.includes('pending')
+                ? 'pending_approval'
+                : 'approved';
 
           overtimeToCreate.push({
             rowNum: i + 1,
@@ -775,30 +1757,37 @@ export async function parseImportFiles(
             otDate: normalizeExcelDate(iDate >= 0 ? r[iDate] : '') || new Date().toISOString().slice(0, 10),
             fromTime,
             toTime,
-            hours: calculateTimeHours(fromTime, toTime),
+            hours,
             otCategoryType: normalizeOtCategory(iCat >= 0 ? String(r[iCat] ?? '') : 'N'),
             workType: (iType >= 0 ? cleanSingleLine(r[iType], MAX_LENGTHS.workType) : '') || 'Overtime Work',
             location: (iLoc >= 0 ? cleanSingleLine(r[iLoc], MAX_LENGTHS.locationZone) : '') || 'Common Area',
             workDescription:
               (iWork >= 0 ? cleanSingleLine(r[iWork], MAX_LENGTHS.workDescription) : '') || 'Overtime duty',
             technicianName: (iTech >= 0 ? cleanSingleLine(r[iTech], MAX_LENGTHS.techName) : '') || 'Technician',
+            approvalStatus,
+            reviewNotes: iRev >= 0 ? cleanSingleLine(r[iRev], MAX_LENGTHS.reviewNotes) : undefined,
           });
         }
         continue;
       }
 
-      // 6. Utility Readings Sheet
-      if (headerSet.has('reading') && headerSet.has('meter') && headerSet.has('date')) {
-        const idx = (name: string) => rawHeaders.indexOf(name);
-        const iId = idx('id');
-        const iTech = idx('technician');
-        const iDate = idx('date');
-        const iType = idx('type');
-        const iArea = idx('area');
-        const iMeter = idx('meter');
-        const iAcct = idx('account');
-        const iReading = idx('reading');
-        const iBld = idx('building');
+      // 7. Utility Readings (Master Utility_Readings OR Legacy Readings CSV)
+      if (
+        sheetLower === 'utility_readings' ||
+        ((normHeaderSet.has('reading value') || headerSet.has('reading')) &&
+          (normHeaderSet.has('meter no') || headerSet.has('meter')) &&
+          (normHeaderSet.has('reading date') || headerSet.has('date')))
+      ) {
+        const iId = col('id');
+        const iTech = col('technician name', 'technician');
+        const iDate = col('reading date', 'date');
+        const iType = col('meter type', 'type');
+        const iArea = col('area');
+        const iMeter = col('meter no', 'meter');
+        const iAcct = col('account no', 'account');
+        const iReading = col('reading value', 'reading');
+        const iNotes = col('notes');
+        const iBld = col('building code', 'building');
 
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
@@ -818,28 +1807,34 @@ export async function parseImportFiles(
             meterNo: iMeter >= 0 ? cleanSingleLine(r[iMeter], MAX_LENGTHS.meterNo) : '',
             accountNo: iAcct >= 0 ? cleanSingleLine(r[iAcct], MAX_LENGTHS.accountNo) : '',
             readingValue: Number.isFinite(val) ? Math.max(0, Math.min(999999999, val)) : 0,
-            notes: '',
+            notes: iNotes >= 0 ? cleanSingleLine(r[iNotes], 400) : '',
             technicianName: (iTech >= 0 ? cleanSingleLine(r[iTech], MAX_LENGTHS.techName) : '') || 'Technician',
           });
         }
         continue;
       }
 
-      // 7. Tenant Schedules Sheet
-      if (headerSet.has('desc') && headerSet.has('location') && headerSet.has('date')) {
-        const idx = (name: string) => rawHeaders.indexOf(name);
-        const iId = idx('id');
-        const iTech = idx('technician');
-        const iDate = idx('date');
-        const iLoc = idx('location');
-        const iCat = idx('category');
-        const iDesc = idx('desc');
-        const iStat = idx('status');
-        const iUpd = idx('updatedat');
-        const iFin = idx('finish');
-        const iObs = idx('observations');
-        const iRem = idx('remarks');
-        const iBld = idx('building');
+      // 8. Tenant Schedules (Master Tenant_Schedules OR Legacy Schedules CSV)
+      if (
+        sheetLower === 'tenant_schedules' ||
+        (normHeaderSet.has('schedule date') && normHeaderSet.has('description')) ||
+        (headerSet.has('desc') && headerSet.has('location') && headerSet.has('date'))
+      ) {
+        const iId = col('id');
+        const iTech = col('assigned technician', 'technician');
+        const iDate = col('schedule date', 'date');
+        const iSlot = col('time slot');
+        const iLoc = col('unit / location', 'location');
+        const iTenant = col('tenant name');
+        const iCat = col('category');
+        const iDesc = col('description', 'desc');
+        const iStat = col('status');
+        const iCompNotes = col('completion notes');
+        const iUpd = col('updatedat');
+        const iFin = col('finish');
+        const iObs = col('observations');
+        const iRem = col('remarks');
+        const iBld = col('building code', 'building');
 
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
@@ -848,16 +1843,24 @@ export async function parseImportFiles(
             (iBld >= 0 ? cleanSingleLine(r[iBld], MAX_LENGTHS.buildingCode).toUpperCase() : '') ||
             defaultBuildingCode;
           if (!knownCodes.has(bCode)) pendingAutoBuildings.add(bCode);
-          const maybeStart = iUpd >= 0 ? cleanSingleLine(r[iUpd], 40) : '';
-          const maybeEnd = iFin >= 0 ? cleanSingleLine(r[iFin], 40) : '';
-          const isTimePair = /^\d{1,2}:\d{2}$/.test(maybeStart) && /^\d{1,2}:\d{2}$/.test(maybeEnd);
-          const timeSlot = isTimePair ? `${maybeStart} - ${maybeEnd}` : '';
-          const notes = [
-            iObs >= 0 ? cleanSingleLine(r[iObs], 400) : '',
-            iRem >= 0 ? cleanSingleLine(r[iRem], 500) : '',
-          ]
-            .filter(Boolean)
-            .join(' — ');
+
+          let timeSlot = iSlot >= 0 ? cleanSingleLine(r[iSlot], MAX_LENGTHS.timeSlot) : '';
+          if (!timeSlot) {
+            const maybeStart = iUpd >= 0 ? cleanSingleLine(r[iUpd], 40) : '';
+            const maybeEnd = iFin >= 0 ? cleanSingleLine(r[iFin], 40) : '';
+            const isTimePair = /^\d{1,2}:\d{2}$/.test(maybeStart) && /^\d{1,2}:\d{2}$/.test(maybeEnd);
+            if (isTimePair) timeSlot = `${maybeStart} - ${maybeEnd}`;
+          }
+
+          const notes =
+            iCompNotes >= 0
+              ? cleanSingleLine(r[iCompNotes], MAX_LENGTHS.completionNotes)
+              : [
+                  iObs >= 0 ? cleanSingleLine(r[iObs], 400) : '',
+                  iRem >= 0 ? cleanSingleLine(r[iRem], 500) : '',
+                ]
+                  .filter(Boolean)
+                  .join(' — ');
 
           schedulesToCreate.push({
             rowNum: i + 1,
@@ -866,7 +1869,7 @@ export async function parseImportFiles(
             scheduleDate: normalizeExcelDate(iDate >= 0 ? r[iDate] : '') || new Date().toISOString().slice(0, 10),
             timeSlot: clampStr(timeSlot, MAX_LENGTHS.timeSlot),
             unitOrLocation: (iLoc >= 0 ? cleanSingleLine(r[iLoc], MAX_LENGTHS.locationZone) : '') || 'Unit',
-            tenantName: '',
+            tenantName: iTenant >= 0 ? cleanSingleLine(r[iTenant], MAX_LENGTHS.techName) : '',
             category: (iCat >= 0 ? cleanSingleLine(r[iCat], MAX_LENGTHS.discipline) : '') || 'General Maintenance',
             description:
               (iDesc >= 0 ? cleanSingleLine(r[iDesc], MAX_LENGTHS.workDescription) : '') ||
@@ -880,38 +1883,115 @@ export async function parseImportFiles(
         continue;
       }
 
-      // 8. Maintenance_Logs_Import (Facility Assist PPM/Repair Template)
+      // 9. Urgent Alerts (Master Urgent_Alerts)
       if (
+        sheetLower === 'urgent_alerts' ||
+        (normHeaderSet.has('severity') && normHeaderSet.has('title') && normHeaderSet.has('message'))
+      ) {
+        const iId = col('id');
+        const iBld = col('building code');
+        const iSev = col('severity');
+        const iCat = col('category');
+        const iTitle = col('title');
+        const iMsg = col('message');
+        const iLoc = col('location / zone', 'location');
+        const iStat = col('status');
+        const iExp = col('expires date');
+        const iBy = col('created by name');
+
+        for (let i = 1; i < aoa.length; i++) {
+          const r = aoa[i];
+          if (!r || r.every((c) => String(c ?? '').trim() === '')) continue;
+          const bCode =
+            (iBld >= 0 ? cleanSingleLine(r[iBld], MAX_LENGTHS.buildingCode).toUpperCase() : '') ||
+            defaultBuildingCode;
+          if (!knownCodes.has(bCode)) pendingAutoBuildings.add(bCode);
+          const title = cleanSingleLine(r[iTitle], MAX_LENGTHS.title);
+          const message = cleanSingleLine(r[iMsg], MAX_LENGTHS.notificationMessage);
+          if (!title || !message) {
+            errors.push(`${label} Row ${i + 1}: Urgent Alert Title and Message are required.`);
+            continue;
+          }
+          notificationsToCreate.push({
+            rowNum: i + 1,
+            id: iId >= 0 ? clampStr(r[iId], MAX_LENGTHS.id) : undefined,
+            buildingCode: bCode,
+            severity: normalizeNotificationSeverity(iSev >= 0 ? String(r[iSev] ?? '') : 'urgent'),
+            category:
+              (iCat >= 0 ? cleanSingleLine(r[iCat], MAX_LENGTHS.discipline) : '') ||
+              'General Building Alert',
+            title,
+            message,
+            locationZone: iLoc >= 0 ? cleanSingleLine(r[iLoc], MAX_LENGTHS.locationZone) : '',
+            status: iStat >= 0 ? normalizeNotificationStatus(String(r[iStat] ?? 'active')) : 'active',
+            expiresAtDate: iExp >= 0 ? normalizeExcelDate(r[iExp]) : '',
+            createdByName: iBy >= 0 ? cleanSingleLine(r[iBy], MAX_LENGTHS.techName) : '',
+          });
+        }
+        continue;
+      }
+
+      // 10. Maintenance_Logs (Master 20-col OR Legacy 16-col Maintenance_Logs_Import)
+      if (
+        sheetLower === 'maintenance_logs' ||
         sheetLower.includes('maintenance') ||
-        (headerSet.has('entry type*') && headerSet.has('building code*')) ||
+        (normHeaderSet.has('entry type') && normHeaderSet.has('building code')) ||
         (!sheetLower.includes('instruction') && !fileLower.includes('technician_logs'))
       ) {
-        if (sheetLower.includes('instruction')) {
-          continue;
-        }
+        const iId = col('id');
+        const iBld = col('building code');
+        const iType = col('entry type');
+        const iDisc = col('discipline');
+        const iAsset = col('asset name');
+        const iTag = col('asset tag');
+        const iLoc = col('location / zone', 'location / floor', 'location');
+        const iTitle = col('work title');
+        const iNotes = col('work notes', 'work notes / checklist findings');
+        const iFreq = col('ppm frequency');
+        const iNext = col('next due date');
+        const iAmc = col('amc contractor');
+        const iSched = col('scheduled date');
+        const iComp = col('completed date');
+        const iOut = col('outcome');
+        const iParts = col('parts used');
+        const iHours = col('labor hours');
+        const iApp = col('approval status');
+        const iSubBy = col('submitted by name');
+        const iRevNotes = col('review notes');
+
+        const isMasterHeader = iId >= 0 && iType >= 0;
+
         for (let i = 1; i < aoa.length; i++) {
           const r = aoa[i];
           if (!r || r.every((c) => String(c ?? '').trim() === '')) continue;
 
-          const buildingCode = clampStr(r[0], MAX_LENGTHS.buildingCode).toUpperCase();
-          const entryType = normalizeEntryType(String(r[1] ?? ''));
-          const discipline = clampStr(r[2], MAX_LENGTHS.discipline) || 'General MEP';
-          const assetName = clampStr(r[3], MAX_LENGTHS.assetName);
-          const assetTag = clampStr(r[4], MAX_LENGTHS.assetTag);
-          const locationZone = clampStr(r[5], MAX_LENGTHS.locationZone);
-          const title = clampStr(r[6], MAX_LENGTHS.title);
-          const workNotes = clampStr(r[7], MAX_LENGTHS.workNotes);
-          const ppmFrequency = normalizeFrequency(String(r[8] ?? 'none'));
-          const amcContractor = clampStr(r[9], MAX_LENGTHS.amcContractor);
-          const scheduledDate = normalizeExcelDate(r[10]);
-          const completedDate = normalizeExcelDate(r[11]) || new Date().toISOString().slice(0, 10);
-          const outcome = normalizeOutcome(String(r[12] ?? 'operational'));
-          const partsUsed = clampStr(r[13], MAX_LENGTHS.partsUsed);
-          const laborRaw = Number(r[14] ?? 0);
-          const laborHours = Number.isFinite(laborRaw) && laborRaw >= 0 ? Math.min(1000, laborRaw) : 0;
-          const rawStatus = String(r[15] ?? '').trim().toLowerCase();
-          const approvalStatus: 'approved' | 'pending_approval' =
-            rawStatus.includes('pending') ? 'pending_approval' : 'approved';
+          const buildingCode = clampStr(
+            r[isMasterHeader ? iBld : 0],
+            MAX_LENGTHS.buildingCode
+          ).toUpperCase();
+          const entryType = normalizeEntryType(String(r[isMasterHeader ? iType : 1] ?? ''));
+          const discipline =
+            clampStr(r[isMasterHeader ? iDisc : 2], MAX_LENGTHS.discipline) || 'General MEP';
+          const assetName = clampStr(r[isMasterHeader ? iAsset : 3], MAX_LENGTHS.assetName);
+          const assetTag = clampStr(r[isMasterHeader ? iTag : 4], MAX_LENGTHS.assetTag);
+          const locationZone = clampStr(r[isMasterHeader ? iLoc : 5], MAX_LENGTHS.locationZone);
+          const title = clampStr(r[isMasterHeader ? iTitle : 6], MAX_LENGTHS.title);
+          const workNotes = clampStr(r[isMasterHeader ? iNotes : 7], MAX_LENGTHS.workNotes);
+          const ppmFrequency = normalizeFrequency(String(r[isMasterHeader ? iFreq : 8] ?? 'none'));
+          const nextDueDate = iNext >= 0 ? normalizeExcelDate(r[iNext]) : undefined;
+          const amcContractor = clampStr(r[isMasterHeader ? iAmc : 9], MAX_LENGTHS.amcContractor);
+          const scheduledDate = normalizeExcelDate(r[isMasterHeader ? iSched : 10]);
+          const completedDate =
+            normalizeExcelDate(r[isMasterHeader ? iComp : 11]) ||
+            new Date().toISOString().slice(0, 10);
+          const outcome = normalizeOutcome(String(r[isMasterHeader ? iOut : 12] ?? 'operational'));
+          const partsUsed = clampStr(r[isMasterHeader ? iParts : 13], MAX_LENGTHS.partsUsed);
+          const laborRaw = Number(r[isMasterHeader ? iHours : 14] ?? 0);
+          const laborHours =
+            Number.isFinite(laborRaw) && laborRaw >= 0 ? Math.min(1000, laborRaw) : 0;
+          const approvalStatus = normalizeApprovalStatus(
+            String(r[isMasterHeader ? iApp : 15] ?? 'approved')
+          );
 
           if (!buildingCode || !entryType || !assetName || !title) {
             if (i === 1 && !entryType) {
@@ -925,13 +2005,14 @@ export async function parseImportFiles(
           }
           if (!knownCodes.has(buildingCode) && !pendingAutoBuildings.has(buildingCode)) {
             errors.push(
-              `${label} Row ${i + 1}: Building Code "${buildingCode}" does not exist in your portfolio or Buildings_Setup sheet.`
+              `${label} Row ${i + 1}: Building Code "${buildingCode}" does not exist in your portfolio or Buildings sheet.`
             );
             continue;
           }
 
           logsToCreate.push({
             rowNum: i + 1,
+            id: iId >= 0 ? clampStr(r[iId], MAX_LENGTHS.id) : undefined,
             buildingCode,
             entryType,
             discipline,
@@ -941,6 +2022,7 @@ export async function parseImportFiles(
             title,
             workNotes,
             ppmFrequency,
+            nextDueDate,
             amcContractor,
             scheduledDate,
             completedDate,
@@ -948,6 +2030,8 @@ export async function parseImportFiles(
             partsUsed,
             laborHours,
             approvalStatus,
+            submittedByName: iSubBy >= 0 ? clampStr(r[iSubBy], MAX_LENGTHS.techName) : undefined,
+            reviewNotes: iRevNotes >= 0 ? clampStr(r[iRevNotes], MAX_LENGTHS.reviewNotes) : undefined,
           });
         }
       } else {
@@ -966,6 +2050,7 @@ export async function parseImportFiles(
         floorsCount: code === 'GST1' ? 37 : 10,
         facilityManager: inferredSupervisor || '',
         amcContractors: [],
+        status: 'active',
       });
       knownCodes.add(code);
     }
@@ -975,12 +2060,15 @@ export async function parseImportFiles(
     {
       buildingsToCreate,
       techniciansToCreate,
+      assetsToCreate,
       logsToCreate,
       workLogsToCreate,
       overtimeToCreate,
       metersToCreate,
       readingsToCreate,
       schedulesToCreate,
+      notificationsToCreate,
+      updateCount: 0,
       skippedDuplicates: 0,
       ignoredItems,
       errors,
@@ -1007,12 +2095,17 @@ export async function loadLegacyGst1ImportPreview(
   const raw: WorkbookImportPreview = {
     buildingsToCreate: Array.isArray(data.buildingsToCreate) ? data.buildingsToCreate : [],
     techniciansToCreate: Array.isArray(data.techniciansToCreate) ? data.techniciansToCreate : [],
+    assetsToCreate: Array.isArray(data.assetsToCreate) ? data.assetsToCreate : [],
     logsToCreate: Array.isArray(data.logsToCreate) ? data.logsToCreate : [],
     workLogsToCreate: Array.isArray(data.workLogsToCreate) ? data.workLogsToCreate : [],
     overtimeToCreate: Array.isArray(data.overtimeToCreate) ? data.overtimeToCreate : [],
     metersToCreate: Array.isArray(data.metersToCreate) ? data.metersToCreate : [],
     readingsToCreate: Array.isArray(data.readingsToCreate) ? data.readingsToCreate : [],
     schedulesToCreate: Array.isArray(data.schedulesToCreate) ? data.schedulesToCreate : [],
+    notificationsToCreate: Array.isArray(data.notificationsToCreate)
+      ? data.notificationsToCreate
+      : [],
+    updateCount: 0,
     skippedDuplicates: 0,
     ignoredItems: Array.isArray(data.ignoredItems) ? data.ignoredItems : [],
     errors: [],

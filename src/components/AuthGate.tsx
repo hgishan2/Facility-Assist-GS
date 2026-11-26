@@ -203,7 +203,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 grid lg:grid-cols-12 items-stretch">
       {/* Left Architectural Visual Panel */}
-      <div className="lg:col-span-7 relative bg-slate-900 overflow-hidden min-h-[260px] lg:min-h-screen flex flex-col justify-between p-8 lg:p-12">
+      <div className="lg:col-span-7 min-w-0 relative bg-slate-900 overflow-hidden min-h-[260px] lg:min-h-screen flex flex-col justify-between p-6 sm:p-8 lg:p-12">
         {!imgFailed ? (
           <img
             src="/src/assets/images/facility_login_backdrop_1795509497403.jpg"
@@ -292,7 +292,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
       </div>
 
       {/* Right Sign-In Column */}
-      <div className="lg:col-span-5 flex flex-col justify-between p-6 sm:p-8 lg:p-12 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 transition-colors">
+      <div className="lg:col-span-5 min-w-0 flex flex-col justify-between p-6 sm:p-8 lg:p-12 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 transition-colors">
         <div className="flex justify-end">
           <ThemeSwitcher variant="compact" />
         </div>

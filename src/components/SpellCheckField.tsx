@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Sparkles, Wand2 } from 'lucide-react';
 import {
   applySingleSpellingFix,
+  AUTOCORRECT_EVENT_NAME,
   autoCorrectFullText,
   autoCorrectWordBoundary,
   findSpellingIssues,
@@ -39,14 +40,8 @@ const SpellAssistStrip: React.FC<SpellAssistStripProps> = ({
 
   const handleFixAll = () => {
     const res = autoCorrectFullText(value);
-    if (res.text !== value) {
-      onChange(res.text);
-      return;
-    }
-    // Also apply any remaining top fuzzy suggestions
-    let next = value;
+    let next = res.text;
     const currentIssues = findSpellingIssues(next);
-    // Apply from end to start so indices stay valid
     for (let i = currentIssues.length - 1; i >= 0; i--) {
       next = applySingleSpellingFix(next, currentIssues[i]);
     }
@@ -117,6 +112,19 @@ function useAutoCorrectState() {
   const [lastCorrectedNotice, setLastCorrectedNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    const syncPref = (ev: Event) => {
+      const custom = ev as CustomEvent<boolean>;
+      if (typeof custom.detail === 'boolean') {
+        setAutoCorrect(custom.detail);
+      } else {
+        setAutoCorrect(isAutoCorrectEnabled());
+      }
+    };
+    window.addEventListener(AUTOCORRECT_EVENT_NAME, syncPref);
+    return () => window.removeEventListener(AUTOCORRECT_EVENT_NAME, syncPref);
+  }, []);
+
+  useEffect(() => {
     if (!lastCorrectedNotice) return;
     const t = setTimeout(() => setLastCorrectedNotice(null), 2600);
     return () => clearTimeout(t);
@@ -143,8 +151,10 @@ export const SpellCheckInput: React.FC<SpellCheckInputProps> = ({
   onValueChange,
   showToggle = false,
   onBlur,
+  onKeyDown,
   ...rest
 }) => {
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const { autoCorrect, toggleAutoCorrect, lastCorrectedNotice, setLastCorrectedNotice } =
     useAutoCorrectState();
 
@@ -154,11 +164,30 @@ export const SpellCheckInput: React.FC<SpellCheckInputProps> = ({
       onValueChange(raw);
       return;
     }
-    const res = autoCorrectWordBoundary(raw, value);
+    const cursorPos = e.target.selectionStart;
+    const res = autoCorrectWordBoundary(raw, value, cursorPos);
     if (res.correctedWord) {
       setLastCorrectedNotice(`Auto-corrected "${res.correctedWord.from}" → "${res.correctedWord.to}"`);
     }
     onValueChange(res.text);
+    if (typeof res.nextCursor === 'number' && res.text !== raw) {
+      const targetPos = res.nextCursor;
+      requestAnimationFrame(() => {
+        if (inputRef.current && document.activeElement === inputRef.current) {
+          inputRef.current.setSelectionRange(targetPos, targetPos);
+        }
+      });
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (autoCorrect && e.key === 'Enter' && value.trim()) {
+      const res = autoCorrectFullText(value);
+      if (res.text !== value) {
+        onValueChange(res.text);
+      }
+    }
+    onKeyDown?.(e);
   };
 
   const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
@@ -176,12 +205,14 @@ export const SpellCheckInput: React.FC<SpellCheckInputProps> = ({
   };
 
   return (
-    <div>
+    <div className="min-w-0">
       <input
         {...rest}
+        ref={inputRef}
         type="text"
         value={value}
         onChange={handleChange}
+        onKeyDown={handleKeyDown}
         onBlur={handleBlur}
         spellCheck={true}
         autoCorrect="on"
@@ -213,6 +244,7 @@ export const SpellCheckTextarea: React.FC<SpellCheckTextareaProps> = ({
   onBlur,
   ...rest
 }) => {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const { autoCorrect, toggleAutoCorrect, lastCorrectedNotice, setLastCorrectedNotice } =
     useAutoCorrectState();
 
@@ -222,11 +254,20 @@ export const SpellCheckTextarea: React.FC<SpellCheckTextareaProps> = ({
       onValueChange(raw);
       return;
     }
-    const res = autoCorrectWordBoundary(raw, value);
+    const cursorPos = e.target.selectionStart;
+    const res = autoCorrectWordBoundary(raw, value, cursorPos);
     if (res.correctedWord) {
       setLastCorrectedNotice(`Auto-corrected "${res.correctedWord.from}" → "${res.correctedWord.to}"`);
     }
     onValueChange(res.text);
+    if (typeof res.nextCursor === 'number' && res.text !== raw) {
+      const targetPos = res.nextCursor;
+      requestAnimationFrame(() => {
+        if (textareaRef.current && document.activeElement === textareaRef.current) {
+          textareaRef.current.setSelectionRange(targetPos, targetPos);
+        }
+      });
+    }
   };
 
   const handleBlur = (e: React.FocusEvent<HTMLTextAreaElement>) => {
@@ -245,9 +286,10 @@ export const SpellCheckTextarea: React.FC<SpellCheckTextareaProps> = ({
   };
 
   return (
-    <div>
+    <div className="min-w-0">
       <textarea
         {...rest}
+        ref={textareaRef}
         value={value}
         onChange={handleChange}
         onBlur={handleBlur}

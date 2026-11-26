@@ -842,7 +842,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
         <div className="space-y-6">
           <div className="grid lg:grid-cols-12 gap-6 items-start">
             {/* Daily Productive Job Hours vs Overtime Chart */}
-            <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <section className="lg:col-span-7 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
@@ -1015,9 +1015,9 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
             </section>
 
             {/* Technician Productive Hours Leaderboard (vs 9h/day Duty) */}
-            <section className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
-              <div className="flex items-start justify-between gap-2">
-                <div>
+            <section className="lg:col-span-5 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
                   <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                     Technician Productive Hours
                   </h2>
@@ -1108,7 +1108,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
 
           {/* Row 2: Trade Workload + Shift & Priority Mix */}
           <div className="grid lg:grid-cols-12 gap-6 items-start">
-            <section className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <section className="lg:col-span-6 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                   Trade / Category Workload &amp; Hours
@@ -1152,7 +1152,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
               )}
             </section>
 
-            <section className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <section className="lg:col-span-6 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                   Shift Distribution, Priority SLA &amp; PPM Snapshot
@@ -1236,7 +1236,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
 
           {/* Row 3: Repeat Problem Locations & Attention Required */}
           <div className="grid lg:grid-cols-12 gap-6 items-start">
-            <section className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+            <section className="lg:col-span-6 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
                 <Repeat className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                 <div>
@@ -1302,11 +1302,11 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
               )}
             </section>
 
-            <section className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400" />
-                  <div>
+            <section className="lg:col-span-6 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                  <div className="min-w-0">
                     <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                       Attention Required (Alerts, Stale &amp; &gt;10h Audits)
                     </h2>
@@ -1338,16 +1338,16 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
                   {flaggedOver10hLogs.slice(0, 4).map(({ log, rawHours }) => (
                     <div
                       key={`over10_${log.id}`}
-                      className="px-5 py-3 flex items-center justify-between gap-3 text-xs"
+                      className="px-5 py-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-3 text-xs"
                     >
-                      <div>
-                        <p className="font-medium text-slate-900 dark:text-slate-100">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">
                           <span className="font-mono text-red-700 dark:text-red-400 mr-1.5">
                             [{rawHours}h &gt; 10h limit]
                           </span>
                           {log.buildingCode} · {log.location}
                         </p>
-                        <p className="text-slate-500 dark:text-slate-400 truncate max-w-md">
+                        <p className="text-slate-500 dark:text-slate-400 truncate">
                           {log.startTime || log.receivedTime || '--:--'} to {log.finishTime || '--:--'} · {log.complaint}
                         </p>
                       </div>
@@ -1359,16 +1359,16 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
                   {staleOpenJobs.slice(0, 5).map((w) => (
                     <div
                       key={w.id}
-                      className="px-5 py-3 flex items-center justify-between gap-3 text-xs"
+                      className="px-5 py-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-3 text-xs"
                     >
-                      <div>
-                        <p className="font-medium text-slate-900 dark:text-slate-100">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">
                           <span className="font-mono text-amber-700 dark:text-amber-400 mr-1.5">
                             [{isoDayDiff(w.logDate, today)}d open]
                           </span>
                           {w.buildingCode} · {w.location}
                         </p>
-                        <p className="text-slate-500 dark:text-slate-400 truncate max-w-md">
+                        <p className="text-slate-500 dark:text-slate-400 truncate">
                           {w.complaint} {w.pendingReason ? `(${w.pendingReason})` : ''}
                         </p>
                       </div>
@@ -1380,10 +1380,10 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
                   {utilityAlerts.slice(0, 6).map((a, idx) => (
                     <div
                       key={`${a.meterId}-${a.date}-${idx}`}
-                      className="px-5 py-3 flex items-center justify-between gap-3 text-xs"
+                      className="px-5 py-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-3 text-xs"
                     >
-                      <div>
-                        <p className="font-medium text-slate-900 dark:text-slate-100">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">
                           <span
                             className={`font-mono mr-1.5 ${
                               a.severity === 'danger'
@@ -1395,7 +1395,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
                           </span>
                           {a.buildingCode} · {a.area}
                         </p>
-                        <p className="text-slate-600 dark:text-slate-400">{a.message}</p>
+                        <p className="text-slate-600 dark:text-slate-400 break-words">{a.message}</p>
                       </div>
                       <span className="font-mono text-slate-500 dark:text-slate-400 shrink-0">
                         {a.date}
@@ -1823,7 +1823,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
         <div className="space-y-6">
           <div className="grid lg:grid-cols-12 gap-6 items-start">
             {/* Daily Jobs Logged vs Completed */}
-            <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <section className="lg:col-span-7 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
@@ -1974,7 +1974,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
             </section>
 
             {/* Open Job Aging Buckets + Shift & Priority SLA */}
-            <section className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-5">
+            <section className="lg:col-span-5 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-5">
               <div className="flex items-center gap-2">
                 <BarChart3 className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                 <div>
@@ -2155,7 +2155,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
 
           <div className="grid lg:grid-cols-12 gap-6 items-start">
             {/* Work Type Breakdown */}
-            <section className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <section className="lg:col-span-6 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                   Maintenance Breakdown by Entry Type
@@ -2218,7 +2218,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
             </section>
 
             {/* Tenant Schedules & Maintenance Disciplines */}
-            <section className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-5">
+            <section className="lg:col-span-6 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-5">
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                   Tenant Work Schedules Status &amp; Trade Mix
@@ -2563,7 +2563,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
 
           <div className="grid lg:grid-cols-12 gap-6 items-start">
             {/* Daily Overtime Hours Trend */}
-            <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <section className="lg:col-span-7 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                   Daily Overtime Hours Trend
@@ -2654,7 +2654,7 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
             </section>
 
             {/* Top Overtime Work Drivers */}
-            <section className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <section className="lg:col-span-5 min-w-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                   Top Overtime Work Reasons

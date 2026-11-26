@@ -58,10 +58,14 @@ import {
   DEFAULT_METER_UNITS,
   emailToGrantId,
   generateSafeId,
+  GST1_SUPERVISOR_PRESET,
+  GST1_TECHNICIANS_PRESET,
   MaintenanceLog,
   MaintenanceNotification,
+  matchTechnicianByName,
   MAX_LENGTHS,
   normalizeEmail,
+  normalizePasscodeForAuth,
   normalizeUsername,
   NotificationSeverity,
   OfflineQueueItem,
@@ -182,6 +186,18 @@ export async function saveBuilding(
         memberEmails: payload.memberEmails,
         updatedAt: serverTimestamp(),
       });
+      const prevSup = JSON.stringify(ctx.existing.supervisorEmails || []);
+      const prevMem = JSON.stringify(ctx.existing.memberEmails || []);
+      const nextSup = JSON.stringify(payload.supervisorEmails);
+      const nextMem = JSON.stringify(payload.memberEmails);
+      if (prevSup !== nextSup || prevMem !== nextMem) {
+        await propagateBuildingAccessToDocs(
+          id,
+          payload.supervisorEmails,
+          payload.memberEmails,
+          { email: ctx.email, role: ctx.role }
+        );
+      }
     } else {
       await setDoc(doc(db, 'buildings', id), {
         ...payload,
@@ -193,6 +209,70 @@ export async function saveBuilding(
     return id;
   } catch (error) {
     handleFirestoreError(error, ctx.existing ? OperationType.UPDATE : OperationType.CREATE, path);
+  }
+}
+
+const BUILDING_SCOPED_COLLECTIONS = [
+  'assets',
+  'utility_meters',
+  'maintenance_logs',
+  'work_logs',
+  'overtime_logs',
+  'utility_readings',
+  'tenant_schedules',
+  'maintenance_notifications',
+] as const;
+
+async function propagateBuildingAccessToDocs(
+  buildingId: string,
+  supervisorEmails: string[],
+  memberEmails: string[],
+  caller: { email: string; role: UserRole }
+): Promise<void> {
+  const cleanCaller = normalizeEmail(caller.email);
+  const nextSupJson = JSON.stringify(supervisorEmails);
+  const nextMemJson = JSON.stringify(memberEmails);
+  const pendingUpdates: { coll: string; id: string }[] = [];
+
+  for (const collName of BUILDING_SCOPED_COLLECTIONS) {
+    const q =
+      caller.role === 'admin'
+        ? query(collection(db, collName), where('buildingId', '==', buildingId))
+        : query(
+            collection(db, collName),
+            where('buildingId', '==', buildingId),
+            where('supervisorEmails', 'array-contains', cleanCaller)
+          );
+    try {
+      const snap = await getDocs(q);
+      for (const d of snap.docs) {
+        const data = d.data() as {
+          supervisorEmails?: string[];
+          buildingMemberEmails?: string[];
+        };
+        if (
+          JSON.stringify(data.supervisorEmails || []) !== nextSupJson ||
+          JSON.stringify(data.buildingMemberEmails || []) !== nextMemJson
+        ) {
+          pendingUpdates.push({ coll: collName, id: d.id });
+        }
+      }
+    } catch {
+      // Skip collections the caller cannot list in full
+    }
+  }
+
+  for (let i = 0; i < pendingUpdates.length; i += 350) {
+    const slice = pendingUpdates.slice(i, i + 350);
+    const batch = writeBatch(db);
+    for (const item of slice) {
+      batch.update(doc(db, item.coll, item.id), {
+        supervisorEmails,
+        buildingMemberEmails: memberEmails,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
   }
 }
 
@@ -428,8 +508,12 @@ export async function saveTechnician(
   let authUid = ctx.existing?.authUid || '';
   let authStatus: 'google' | 'created' | 'already_exists' | 'provider_disabled' | 'unchanged' = 'unchanged';
 
-  if (input.passcode && input.passcode.trim().length >= 6) {
-    const prov = await provisionUserAuthAccount(authEmail, input.passcode.trim(), input.name.trim());
+  if (input.passcode && input.passcode.trim().length >= 4) {
+    const prov = await provisionUserAuthAccount(
+      authEmail,
+      normalizePasscodeForAuth(input.passcode),
+      input.name.trim()
+    );
     authStatus = prov.status;
     if (prov.uid) authUid = prov.uid;
   }
@@ -545,15 +629,25 @@ export async function saveTechnician(
         b.supervisorEmails.map(normalizeEmail).includes(callerClean)
     );
 
+    const buildingUpdates: { id: string; sup: string[]; mem: string[] }[] = [];
     for (const b of scopedBuildings) {
       const nextMembers = buildBuildingMemberEmails(b.id, updatedTechList, b.supervisorEmails);
       batch.update(doc(db, 'buildings', b.id), {
         memberEmails: nextMembers,
         updatedAt: serverTimestamp(),
       });
+      if (JSON.stringify(b.memberEmails || []) !== JSON.stringify(nextMembers)) {
+        buildingUpdates.push({ id: b.id, sup: b.supervisorEmails, mem: nextMembers });
+      }
     }
 
     await batch.commit();
+    for (const upd of buildingUpdates) {
+      await propagateBuildingAccessToDocs(upd.id, upd.sup, upd.mem, {
+        email: ctx.email,
+        role: ctx.role,
+      });
+    }
     return { techId, authStatus };
   } catch (error) {
     handleFirestoreError(error, ctx.existing ? OperationType.UPDATE : OperationType.CREATE, `technicians/${techId}`);
@@ -600,14 +694,24 @@ export async function deleteTechnician(
         b.supervisorEmails.map(normalizeEmail).includes(callerClean)
     );
 
+    const buildingUpdates: { id: string; sup: string[]; mem: string[] }[] = [];
     for (const b of scopedBuildings) {
       const nextMembers = buildBuildingMemberEmails(b.id, remainingTechs, b.supervisorEmails);
       batch.update(doc(db, 'buildings', b.id), {
         memberEmails: nextMembers,
         updatedAt: serverTimestamp(),
       });
+      if (JSON.stringify(b.memberEmails || []) !== JSON.stringify(nextMembers)) {
+        buildingUpdates.push({ id: b.id, sup: b.supervisorEmails, mem: nextMembers });
+      }
     }
     await batch.commit();
+    for (const upd of buildingUpdates) {
+      await propagateBuildingAccessToDocs(upd.id, upd.sup, upd.mem, {
+        email: ctx.email,
+        role: ctx.role,
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `technicians/${tech.id}`);
   }
@@ -1043,12 +1147,19 @@ export async function flushOfflineQueue(ctx: {
 
   for (const op of opsQueue) {
     try {
-      await setDoc(doc(db, op.collectionName, op.docId), {
-        ...op.payload,
-        source: 'offline_sync',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      if (op.action === 'update') {
+        await updateDoc(doc(db, op.collectionName, op.docId), {
+          ...op.payload,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(doc(db, op.collectionName, op.docId), {
+          ...op.payload,
+          source: 'offline_sync',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
       await removeOfflineOpItem(op.queueId);
       syncedCount += 1;
     } catch (error) {
@@ -1172,7 +1283,15 @@ export async function bulkImportWorkbookData(
     const badge = clampStr(row.badgeId, MAX_LENGTHS.badgeId).toUpperCase();
     const cleanName = clampStr(row.name, MAX_LENGTHS.techName);
     if (!badge || !cleanName) continue;
-    if (existingTechByBadge.has(badge) || existingTechByName.has(cleanName.toLowerCase())) {
+    const rosterMatch = matchTechnicianByName(
+      cleanName,
+      allTechnicians.filter((t) => t.role === 'technician')
+    );
+    if (
+      existingTechByBadge.has(badge) ||
+      existingTechByName.has(cleanName.toLowerCase()) ||
+      rosterMatch
+    ) {
       skippedDuplicates += 1;
       continue;
     }
@@ -1476,6 +1595,18 @@ export async function bulkImportWorkbookData(
       }
       existingWorkIdSet.add(docId);
 
+      const techRoster = allTechnicians.filter((t) => t.role === 'technician');
+      const matchedTech = matchTechnicianByName(row.technicianName, techRoster);
+      const targetUid = clampStr(matchedTech ? matchedTech.authUid || '' : ctx.uid, MAX_LENGTHS.id);
+      const targetName = clampStr(
+        matchedTech ? matchedTech.name : row.technicianName || actorName,
+        MAX_LENGTHS.techName
+      );
+      const targetEmail = clampStr(
+        matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
+        MAX_LENGTHS.email
+      );
+
       batch.set(doc(db, 'work_logs', docId), {
         id: docId,
         buildingId: b.id,
@@ -1497,9 +1628,9 @@ export async function bulkImportWorkbookData(
         status: row.status,
         pendingReason: row.status === 'Completed' ? '' : clampStr(row.pendingReason, MAX_LENGTHS.pendingReason),
         remarks: clampStr(row.remarks, MAX_LENGTHS.remarks),
-        technicianUid: ctx.uid,
-        technicianName: clampStr(row.technicianName || actorName, MAX_LENGTHS.techName),
-        technicianEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+        technicianUid: targetUid,
+        technicianName: targetName,
+        technicianEmail: targetEmail,
         supervisorName: clampStr(row.supervisorName || b.facilityManager || '', MAX_LENGTHS.techName),
         supervisorEmails: b.supervisorEmails,
         buildingMemberEmails: b.memberEmails,
@@ -1538,7 +1669,19 @@ export async function bulkImportWorkbookData(
         continue;
       }
       existingOtIdSet.add(docId);
-      const matchedTech = existingTechByName.get(row.technicianName.trim().toLowerCase());
+      const matchedTech = matchTechnicianByName(
+        row.technicianName,
+        allTechnicians.filter((t) => t.role === 'technician')
+      );
+      const targetUid = clampStr(matchedTech ? matchedTech.authUid || '' : ctx.uid, MAX_LENGTHS.id);
+      const targetName = clampStr(
+        matchedTech ? matchedTech.name : row.technicianName || actorName,
+        MAX_LENGTHS.techName
+      );
+      const targetEmail = clampStr(
+        matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
+        MAX_LENGTHS.email
+      );
 
       batch.set(doc(db, 'overtime_logs', docId), {
         id: docId,
@@ -1555,10 +1698,10 @@ export async function bulkImportWorkbookData(
         workDescription: clampStr(row.workDescription, MAX_LENGTHS.workDescription) || 'Overtime duty',
         approvalStatus: 'approved',
         reviewNotes: 'Imported from legacy records.',
-        technicianUid: ctx.uid,
-        technicianName: clampStr(row.technicianName || actorName, MAX_LENGTHS.techName),
+        technicianUid: targetUid,
+        technicianName: targetName,
         technicianBadgeId: clampStr(matchedTech?.badgeId || '', MAX_LENGTHS.badgeId),
-        technicianEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+        technicianEmail: targetEmail,
         supervisorEmails: b.supervisorEmails,
         buildingMemberEmails: b.memberEmails,
         source: 'portal',
@@ -1603,6 +1746,20 @@ export async function bulkImportWorkbookData(
       if (!matchedMeter) continue;
       existingReadingIdSet.add(docId);
 
+      const matchedTech = matchTechnicianByName(
+        row.technicianName,
+        allTechnicians.filter((t) => t.role === 'technician')
+      );
+      const targetUid = clampStr(matchedTech ? matchedTech.authUid || '' : ctx.uid, MAX_LENGTHS.id);
+      const targetName = clampStr(
+        matchedTech ? matchedTech.name : row.technicianName || actorName,
+        MAX_LENGTHS.techName
+      );
+      const targetEmail = clampStr(
+        matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
+        MAX_LENGTHS.email
+      );
+
       batch.set(doc(db, 'utility_readings', docId), {
         id: docId,
         buildingId: b.id,
@@ -1615,9 +1772,9 @@ export async function bulkImportWorkbookData(
         readingDate: clampStr(row.readingDate, MAX_LENGTHS.dateStr) || new Date().toISOString().slice(0, 10),
         readingValue: Math.max(0, Math.min(999999999, Number(row.readingValue) || 0)),
         notes: clampStr(row.notes, 400),
-        technicianUid: ctx.uid,
-        technicianName: clampStr(row.technicianName || actorName, MAX_LENGTHS.techName),
-        technicianEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+        technicianUid: targetUid,
+        technicianName: targetName,
+        technicianEmail: targetEmail,
         supervisorEmails: b.supervisorEmails,
         buildingMemberEmails: b.memberEmails,
         source: 'portal',
@@ -1655,7 +1812,10 @@ export async function bulkImportWorkbookData(
         continue;
       }
       existingScheduleIdSet.add(docId);
-      const matchedTech = existingTechByName.get(row.assignedTechName.trim().toLowerCase());
+      const matchedTech = matchTechnicianByName(
+        row.assignedTechName,
+        allTechnicians.filter((t) => t.role === 'technician')
+      );
 
       batch.set(doc(db, 'tenant_schedules', docId), {
         id: docId,
@@ -1669,7 +1829,10 @@ export async function bulkImportWorkbookData(
         category: clampStr(row.category, MAX_LENGTHS.discipline) || 'General Maintenance',
         description: clampStr(row.description, MAX_LENGTHS.workDescription) || 'Scheduled unit maintenance',
         assignedTechUid: clampStr(matchedTech?.authUid || '', MAX_LENGTHS.id),
-        assignedTechName: clampStr(row.assignedTechName || actorName, MAX_LENGTHS.techName),
+        assignedTechName: clampStr(
+          matchedTech ? matchedTech.name : row.assignedTechName || actorName,
+          MAX_LENGTHS.techName
+        ),
         assignedTechEmail: clampStr(
           matchedTech ? normalizeEmail(matchedTech.authEmail || matchedTech.email) : cleanEmail,
           MAX_LENGTHS.email
@@ -1710,6 +1873,709 @@ export async function bulkImportWorkbookData(
     createdReadings,
     createdSchedules,
     skippedDuplicates,
+  };
+}
+
+export interface StaffOwnershipRepairResult {
+  updatedBuildings: number;
+  updatedWorkLogs: number;
+  updatedOvertime: number;
+  updatedReadings: number;
+  updatedSchedules: number;
+  totalUpdated: number;
+}
+
+/**
+ * Re-links existing imported or manager-logged records (work_logs, overtime_logs,
+ * utility_readings, tenant_schedules) to their matching technician's canonical
+ * authEmail, authUid, badgeId, and name, and syncs building member access lists.
+ */
+export async function repairStaffRecordOwnership(params: {
+  buildings: Building[];
+  technicians: Technician[];
+  workLogs: WorkLog[];
+  overtimeLogs: OvertimeLog[];
+  utilityReadings: UtilityReading[];
+  tenantSchedules: TenantSchedule[];
+  caller: { email: string; role: UserRole };
+}): Promise<StaffOwnershipRepairResult> {
+  const { buildings, technicians, workLogs, overtimeLogs, utilityReadings, tenantSchedules, caller } =
+    params;
+
+  if (technicians.length === 0) {
+    return {
+      updatedBuildings: 0,
+      updatedWorkLogs: 0,
+      updatedOvertime: 0,
+      updatedReadings: 0,
+      updatedSchedules: 0,
+      totalUpdated: 0,
+    };
+  }
+
+  const cleanCaller = normalizeEmail(caller.email);
+  const isAdminCaller = caller.role === 'admin' || cleanCaller === ADMIN_AUTH_EMAIL;
+  const buildingMap = new Map<string, Building>();
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+
+  let updatedBuildings = 0;
+  let updatedWorkLogs = 0;
+  let updatedOvertime = 0;
+  let updatedReadings = 0;
+  let updatedSchedules = 0;
+
+  for (const b of buildings) {
+    const canManageB =
+      isAdminCaller || b.supervisorEmails.map(normalizeEmail).includes(cleanCaller);
+    const nextMembers = buildBuildingMemberEmails(b.id, technicians, b.supervisorEmails);
+    const syncedBuilding: Building = { ...b, memberEmails: nextMembers };
+    buildingMap.set(b.id, syncedBuilding);
+
+    if (canManageB && JSON.stringify(b.memberEmails || []) !== JSON.stringify(nextMembers)) {
+      ops.push((batch) => {
+        batch.update(doc(db, 'buildings', b.id), {
+          memberEmails: nextMembers,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      updatedBuildings += 1;
+    }
+  }
+
+  const canUpdateChildDoc = (existingSups: string[], b?: Building) => {
+    if (isAdminCaller) return true;
+    const targetSups = (b ? b.supervisorEmails : existingSups).map(normalizeEmail);
+    return (
+      existingSups.map(normalizeEmail).includes(cleanCaller) &&
+      targetSups.includes(cleanCaller)
+    );
+  };
+
+  const techRoster = technicians.filter((t) => t.role === 'technician');
+  const matchRecordTech = (rawName: string, rawEmail?: string, rawBadge?: string): Technician | null => {
+    const cleanRecEmail = normalizeEmail(rawEmail || '');
+    if (cleanRecEmail && cleanRecEmail !== ADMIN_AUTH_EMAIL) {
+      const byEmail = matchTechnicianByName(cleanRecEmail, techRoster);
+      if (byEmail) return byEmail;
+    }
+    const byName = matchTechnicianByName(rawName, techRoster);
+    if (byName) return byName;
+    if (rawBadge) {
+      return matchTechnicianByName(rawBadge, techRoster);
+    }
+    return null;
+  };
+
+  for (const w of workLogs) {
+    const b = buildingMap.get(w.buildingId);
+    if (!canUpdateChildDoc(w.supervisorEmails || [], b)) continue;
+
+    const matched = matchRecordTech(w.technicianName, w.technicianEmail);
+    const nextSups = b ? b.supervisorEmails : w.supervisorEmails || [];
+    const nextMems = b ? b.memberEmails : w.buildingMemberEmails || [];
+    const accessChanged =
+      JSON.stringify(w.supervisorEmails || []) !== JSON.stringify(nextSups) ||
+      JSON.stringify(w.buildingMemberEmails || []) !== JSON.stringify(nextMems);
+
+    let techChanged = false;
+    const updateData: Record<string, unknown> = {};
+
+    if (matched) {
+      const targetEmail = clampStr(normalizeEmail(matched.authEmail || matched.email), MAX_LENGTHS.email);
+      const targetUid = clampStr(matched.authUid || '', MAX_LENGTHS.id);
+      const targetName = clampStr(matched.name, MAX_LENGTHS.techName);
+      if (
+        targetEmail &&
+        (normalizeEmail(w.technicianEmail || '') !== targetEmail ||
+          (targetUid && w.technicianUid !== targetUid) ||
+          w.technicianName !== targetName)
+      ) {
+        techChanged = true;
+        updateData.technicianEmail = targetEmail;
+        updateData.technicianUid = targetUid;
+        updateData.technicianName = targetName;
+      }
+    }
+
+    if (accessChanged) {
+      updateData.supervisorEmails = nextSups;
+      updateData.buildingMemberEmails = nextMems;
+    }
+
+    if (techChanged || accessChanged) {
+      ops.push((batch) => {
+        batch.update(doc(db, 'work_logs', w.id), {
+          ...updateData,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      updatedWorkLogs += 1;
+    }
+  }
+
+  for (const o of overtimeLogs) {
+    const b = buildingMap.get(o.buildingId);
+    if (!canUpdateChildDoc(o.supervisorEmails || [], b)) continue;
+
+    const matched = matchRecordTech(o.technicianName, o.technicianEmail, o.technicianBadgeId);
+    const nextSups = b ? b.supervisorEmails : o.supervisorEmails || [];
+    const nextMems = b ? b.memberEmails : o.buildingMemberEmails || [];
+    const accessChanged =
+      JSON.stringify(o.supervisorEmails || []) !== JSON.stringify(nextSups) ||
+      JSON.stringify(o.buildingMemberEmails || []) !== JSON.stringify(nextMems);
+
+    let techChanged = false;
+    const updateData: Record<string, unknown> = {};
+
+    if (matched) {
+      const targetEmail = clampStr(normalizeEmail(matched.authEmail || matched.email), MAX_LENGTHS.email);
+      const targetUid = clampStr(matched.authUid || '', MAX_LENGTHS.id);
+      const targetName = clampStr(matched.name, MAX_LENGTHS.techName);
+      const targetBadge = clampStr(matched.badgeId || '', MAX_LENGTHS.badgeId);
+      if (
+        targetEmail &&
+        (normalizeEmail(o.technicianEmail || '') !== targetEmail ||
+          (targetUid && o.technicianUid !== targetUid) ||
+          o.technicianName !== targetName ||
+          o.technicianBadgeId !== targetBadge)
+      ) {
+        techChanged = true;
+        updateData.technicianEmail = targetEmail;
+        updateData.technicianUid = targetUid;
+        updateData.technicianName = targetName;
+        updateData.technicianBadgeId = targetBadge;
+      }
+    }
+
+    if (accessChanged) {
+      updateData.supervisorEmails = nextSups;
+      updateData.buildingMemberEmails = nextMems;
+    }
+
+    if (techChanged || accessChanged) {
+      ops.push((batch) => {
+        batch.update(doc(db, 'overtime_logs', o.id), {
+          ...updateData,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      updatedOvertime += 1;
+    }
+  }
+
+  for (const r of utilityReadings) {
+    const b = buildingMap.get(r.buildingId);
+    if (!canUpdateChildDoc(r.supervisorEmails || [], b)) continue;
+
+    const matched = matchRecordTech(r.technicianName, r.technicianEmail);
+    const nextSups = b ? b.supervisorEmails : r.supervisorEmails || [];
+    const nextMems = b ? b.memberEmails : r.buildingMemberEmails || [];
+    const accessChanged =
+      JSON.stringify(r.supervisorEmails || []) !== JSON.stringify(nextSups) ||
+      JSON.stringify(r.buildingMemberEmails || []) !== JSON.stringify(nextMems);
+
+    let techChanged = false;
+    const updateData: Record<string, unknown> = {};
+
+    if (matched) {
+      const targetEmail = clampStr(normalizeEmail(matched.authEmail || matched.email), MAX_LENGTHS.email);
+      const targetUid = clampStr(matched.authUid || '', MAX_LENGTHS.id);
+      const targetName = clampStr(matched.name, MAX_LENGTHS.techName);
+      if (
+        targetEmail &&
+        (normalizeEmail(r.technicianEmail || '') !== targetEmail ||
+          (targetUid && r.technicianUid !== targetUid) ||
+          r.technicianName !== targetName)
+      ) {
+        techChanged = true;
+        updateData.technicianEmail = targetEmail;
+        updateData.technicianUid = targetUid;
+        updateData.technicianName = targetName;
+      }
+    }
+
+    if (accessChanged) {
+      updateData.supervisorEmails = nextSups;
+      updateData.buildingMemberEmails = nextMems;
+    }
+
+    if (techChanged || accessChanged) {
+      ops.push((batch) => {
+        batch.update(doc(db, 'utility_readings', r.id), {
+          ...updateData,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      updatedReadings += 1;
+    }
+  }
+
+  for (const s of tenantSchedules) {
+    const b = buildingMap.get(s.buildingId);
+    if (!canUpdateChildDoc(s.supervisorEmails || [], b)) continue;
+
+    const matched = matchRecordTech(s.assignedTechName, s.assignedTechEmail);
+    const nextSups = b ? b.supervisorEmails : s.supervisorEmails || [];
+    const nextMems = b ? b.memberEmails : s.buildingMemberEmails || [];
+    const accessChanged =
+      JSON.stringify(s.supervisorEmails || []) !== JSON.stringify(nextSups) ||
+      JSON.stringify(s.buildingMemberEmails || []) !== JSON.stringify(nextMems);
+
+    let techChanged = false;
+    const updateData: Record<string, unknown> = {};
+
+    if (matched) {
+      const targetEmail = clampStr(normalizeEmail(matched.authEmail || matched.email), MAX_LENGTHS.email);
+      const targetUid = clampStr(matched.authUid || '', MAX_LENGTHS.id);
+      const targetName = clampStr(matched.name, MAX_LENGTHS.techName);
+      if (
+        targetEmail &&
+        (normalizeEmail(s.assignedTechEmail || '') !== targetEmail ||
+          (targetUid && s.assignedTechUid !== targetUid) ||
+          s.assignedTechName !== targetName)
+      ) {
+        techChanged = true;
+        updateData.assignedTechEmail = targetEmail;
+        updateData.assignedTechUid = targetUid;
+        updateData.assignedTechName = targetName;
+      }
+    }
+
+    if (accessChanged) {
+      updateData.supervisorEmails = nextSups;
+      updateData.buildingMemberEmails = nextMems;
+    }
+
+    if (techChanged || accessChanged) {
+      ops.push((batch) => {
+        batch.update(doc(db, 'tenant_schedules', s.id), {
+          ...updateData,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      updatedSchedules += 1;
+    }
+  }
+
+  for (let i = 0; i < ops.length; i += 350) {
+    const batch = writeBatch(db);
+    for (const fn of ops.slice(i, i + 350)) fn(batch);
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'work_logs');
+    }
+  }
+
+  const totalUpdated =
+    updatedBuildings + updatedWorkLogs + updatedOvertime + updatedReadings + updatedSchedules;
+  return {
+    updatedBuildings,
+    updatedWorkLogs,
+    updatedOvertime,
+    updatedReadings,
+    updatedSchedules,
+    totalUpdated,
+  };
+}
+
+export interface Gst1AccountProvisionSummary {
+  role: 'supervisor' | 'technician';
+  name: string;
+  loginId: string;
+  password: string;
+  authStatus: 'created' | 'already_exists' | 'provider_disabled' | 'unchanged';
+  mergedDuplicates: number;
+}
+
+export interface Gst1TeamProvisionResult {
+  buildingId: string;
+  supervisorEmail: string;
+  accounts: Gst1AccountProvisionSummary[];
+  createdCount: number;
+  alreadyExistsCount: number;
+  providerDisabled: boolean;
+  dedupedProfilesCount: number;
+  repairSummary: StaffOwnershipRepairResult;
+}
+
+/**
+ * Provisions the GST1 Supervisor (ISHAN MADHUSHANKA / 713361) and all 9 GST1
+ * technician accounts (with Emp Code as both Badge ID and Passcode), merges
+ * any duplicate technician profiles created by name variants, updates GST1
+ * building & collection ownership, and re-links all existing GST1 records.
+ */
+export async function provisionGst1TeamAndRecords(ctx: {
+  uid: string;
+  email: string;
+  role: UserRole;
+  buildings: Building[];
+  technicians: Technician[];
+  workLogs: WorkLog[];
+  overtimeLogs: OvertimeLog[];
+  utilityReadings: UtilityReading[];
+  tenantSchedules: TenantSchedule[];
+}): Promise<Gst1TeamProvisionResult> {
+  const cleanCaller = normalizeEmail(ctx.email);
+  const isAdminCaller = ctx.role === 'admin' || cleanCaller === ADMIN_AUTH_EMAIL;
+  const supAuthEmail = supervisorToAuthEmail(GST1_SUPERVISOR_PRESET.username);
+  const accounts: Gst1AccountProvisionSummary[] = [];
+  let createdCount = 0;
+  let alreadyExistsCount = 0;
+  let providerDisabled = false;
+  let dedupedProfilesCount = 0;
+
+  let workingTechs = [...ctx.technicians];
+  let workingBuildings = [...ctx.buildings];
+
+  // 1. Ensure Supervisor ISHAN MADHUSHANKA (713361) exists when Admin runs setup
+  const existingSup = workingTechs.find(
+    (t) =>
+      t.role === 'supervisor' &&
+      (normalizeUsername(t.username || '') === GST1_SUPERVISOR_PRESET.username ||
+        normalizeEmail(t.authEmail || t.email) === supAuthEmail ||
+        t.name.trim().toUpperCase() === GST1_SUPERVISOR_PRESET.name)
+  );
+
+  if (isAdminCaller) {
+    let supAuthStatus: Gst1AccountProvisionSummary['authStatus'] = 'unchanged';
+    if (!existingSup || !existingSup.authUid || existingSup.status !== 'active' || existingSup.username !== GST1_SUPERVISOR_PRESET.username) {
+      const supRes = await saveSupervisorAccount(
+        {
+          id: existingSup?.id,
+          name: GST1_SUPERVISOR_PRESET.name,
+          username: GST1_SUPERVISOR_PRESET.username,
+          password: existingSup?.authUid ? undefined : GST1_SUPERVISOR_PRESET.password,
+          email: supAuthEmail,
+          trade: GST1_SUPERVISOR_PRESET.trade,
+          phone: existingSup?.phone || '',
+          status: 'active',
+        },
+        { uid: ctx.uid, existing: existingSup }
+      );
+      supAuthStatus = supRes.authStatus;
+      if (supRes.authStatus === 'created') createdCount += 1;
+      if (supRes.authStatus === 'already_exists') alreadyExistsCount += 1;
+      if (supRes.authStatus === 'provider_disabled') providerDisabled = true;
+
+      if (!existingSup) {
+        workingTechs.push({
+          id: supRes.supervisorId,
+          name: GST1_SUPERVISOR_PRESET.name,
+          email: supAuthEmail,
+          username: GST1_SUPERVISOR_PRESET.username,
+          authMode: 'username_password',
+          authEmail: supAuthEmail,
+          authUid: '',
+          badgeId: `SUP-${GST1_SUPERVISOR_PRESET.username}`,
+          trade: GST1_SUPERVISOR_PRESET.trade,
+          phone: '',
+          role: 'supervisor',
+          status: 'active',
+          assignedBuildingIds: [],
+          supervisorEmails: [supAuthEmail, ADMIN_AUTH_EMAIL],
+          createdByUid: ctx.uid,
+        });
+      }
+    } else {
+      supAuthStatus = 'already_exists';
+      alreadyExistsCount += 1;
+    }
+    accounts.push({
+      role: 'supervisor',
+      name: GST1_SUPERVISOR_PRESET.name,
+      loginId: GST1_SUPERVISOR_PRESET.username,
+      password: GST1_SUPERVISOR_PRESET.password,
+      authStatus: supAuthStatus,
+      mergedDuplicates: 0,
+    });
+  }
+
+  // 2. Ensure Building GST1 exists and lists Admin + ISHAN MADHUSHANKA as supervisors
+  let gst1Building =
+    workingBuildings.find((b) => b.code.trim().toUpperCase() === 'GST1') || null;
+  const gst1Id = gst1Building?.id || generateSafeId('bld');
+  const targetSupEmails = Array.from(
+    new Set([
+      ADMIN_AUTH_EMAIL,
+      supAuthEmail,
+      ...((gst1Building?.supervisorEmails || []).map(normalizeEmail)),
+    ])
+  )
+    .filter(Boolean)
+    .slice(0, 10);
+
+  if (!gst1Building) {
+    const initialMembers = [...targetSupEmails];
+    gst1Building = {
+      id: gst1Id,
+      code: 'GST1',
+      name: 'GST1 Tower',
+      address: '',
+      floorsCount: 37,
+      facilityManager: GST1_SUPERVISOR_PRESET.name,
+      amcContractors: [],
+      status: 'active',
+      supervisorEmails: targetSupEmails,
+      memberEmails: initialMembers,
+      createdByUid: ctx.uid,
+    };
+    await setDoc(doc(db, 'buildings', gst1Id), {
+      ...gst1Building,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    workingBuildings.push(gst1Building);
+  } else {
+    const supDiff =
+      JSON.stringify([...(gst1Building.supervisorEmails || [])].sort()) !==
+      JSON.stringify([...targetSupEmails].sort());
+    if (supDiff || gst1Building.facilityManager !== GST1_SUPERVISOR_PRESET.name) {
+      await updateDoc(doc(db, 'buildings', gst1Building.id), {
+        facilityManager: GST1_SUPERVISOR_PRESET.name,
+        supervisorEmails: targetSupEmails,
+        updatedAt: serverTimestamp(),
+      });
+      gst1Building = {
+        ...gst1Building,
+        facilityManager: GST1_SUPERVISOR_PRESET.name,
+        supervisorEmails: targetSupEmails,
+      };
+      workingBuildings = workingBuildings.map((b) =>
+        b.id === gst1Building!.id ? gst1Building! : b
+      );
+    }
+  }
+
+  // 3. Group existing technician docs by canonical GST1 preset to merge any name-variant duplicates
+  const canonicalTemplates: Technician[] = GST1_TECHNICIANS_PRESET.map((p) => ({
+    id: `canon_${p.badgeId}`,
+    name: p.name,
+    email: '',
+    authMode: 'badge_passcode',
+    authEmail: badgeToAuthEmail(p.badgeId),
+    authUid: '',
+    badgeId: p.badgeId,
+    trade: p.trade,
+    phone: '',
+    role: 'technician',
+    status: 'active',
+    assignedBuildingIds: [gst1Id],
+    supervisorEmails: targetSupEmails,
+    createdByUid: ctx.uid,
+  }));
+
+  const groupedExisting = new Map<string, Technician[]>();
+  for (const t of workingTechs) {
+    if (t.role !== 'technician') continue;
+    const badgeUpper = (t.badgeId || '').trim().toUpperCase();
+    const byBadge = GST1_TECHNICIANS_PRESET.find((p) => p.badgeId === badgeUpper);
+    if (byBadge) {
+      const arr = groupedExisting.get(byBadge.badgeId) || [];
+      arr.push(t);
+      groupedExisting.set(byBadge.badgeId, arr);
+      continue;
+    }
+    const cleanTechAuth = normalizeEmail(t.authEmail || '');
+    const byAuth = GST1_TECHNICIANS_PRESET.find(
+      (p) => badgeToAuthEmail(p.badgeId) === cleanTechAuth
+    );
+    if (byAuth) {
+      const arr = groupedExisting.get(byAuth.badgeId) || [];
+      arr.push(t);
+      groupedExisting.set(byAuth.badgeId, arr);
+      continue;
+    }
+    if (t.assignedBuildingIds.includes(gst1Id) || t.assignedBuildingIds.length === 0) {
+      const byName = matchTechnicianByName(t.name, canonicalTemplates);
+      if (byName) {
+        const arr = groupedExisting.get(byName.badgeId) || [];
+        arr.push(t);
+        groupedExisting.set(byName.badgeId, arr);
+      }
+    }
+  }
+
+  const removedDuplicateTechIds = new Set<string>();
+
+  for (const preset of GST1_TECHNICIANS_PRESET) {
+    const matches = groupedExisting.get(preset.badgeId) || [];
+    const sorted = [...matches].sort((a, b) => {
+      const score = (x: Technician) =>
+        (x.badgeId.trim().toUpperCase() === preset.badgeId ? 10 : 0) +
+        (x.authUid ? 5 : 0) +
+        (x.name.trim().toUpperCase() === preset.name ? 2 : 0);
+      return score(b) - score(a);
+    });
+
+    const primary = sorted[0] || null;
+    const extras = sorted.slice(1);
+    const canonAuthEmail = badgeToAuthEmail(preset.badgeId);
+    const canonGrantId = emailToGrantId(canonAuthEmail);
+
+    // Delete any duplicate technician profiles for the same person
+    for (const extra of extras) {
+      try {
+        const delBatch = writeBatch(db);
+        delBatch.delete(doc(db, 'technicians', extra.id));
+        const extraAuth = normalizeEmail(extra.authEmail || extra.email);
+        if (extraAuth && extraAuth !== canonAuthEmail) {
+          delBatch.delete(doc(db, 'access_grants', emailToGrantId(extraAuth)));
+        }
+        await delBatch.commit();
+        removedDuplicateTechIds.add(extra.id);
+        dedupedProfilesCount += 1;
+      } catch {
+        // Ignore if extra grant/doc was already removed
+      }
+    }
+
+    const techId = primary?.id || generateSafeId('tech');
+    let authUid = primary?.authUid || '';
+    let authStatus: Gst1AccountProvisionSummary['authStatus'] = 'already_exists';
+
+    if (!authUid) {
+      const prov = await provisionUserAuthAccount(
+        canonAuthEmail,
+        normalizePasscodeForAuth(preset.badgeId),
+        preset.name
+      );
+      authStatus = prov.status;
+      if (prov.uid) authUid = prov.uid;
+      if (prov.status === 'created') createdCount += 1;
+      else if (prov.status === 'already_exists') alreadyExistsCount += 1;
+      else if (prov.status === 'provider_disabled') providerDisabled = true;
+    } else {
+      alreadyExistsCount += 1;
+    }
+
+    const assignedBuildingIds = Array.from(
+      new Set([...(primary?.assignedBuildingIds || []), gst1Id])
+    ).slice(0, 30);
+
+    const techDocData: Omit<Technician, 'createdAt' | 'updatedAt'> = {
+      id: techId,
+      name: clampStr(preset.name, MAX_LENGTHS.techName),
+      email: clampStr(primary?.email || '', MAX_LENGTHS.email),
+      authMode: 'badge_passcode',
+      authEmail: clampStr(canonAuthEmail, MAX_LENGTHS.email),
+      authUid: clampStr(authUid, MAX_LENGTHS.id),
+      badgeId: preset.badgeId,
+      trade: clampStr(preset.trade, MAX_LENGTHS.trade),
+      phone: clampStr(primary?.phone || '', MAX_LENGTHS.phone),
+      role: 'technician',
+      status: 'active',
+      assignedBuildingIds,
+      supervisorEmails: targetSupEmails,
+      createdByUid: primary?.createdByUid || ctx.uid,
+    };
+
+    const grantPayload = {
+      email: techDocData.email,
+      authMode: techDocData.authMode,
+      authEmail: techDocData.authEmail,
+      authUid: techDocData.authUid,
+      techId,
+      name: techDocData.name,
+      badgeId: techDocData.badgeId,
+      trade: techDocData.trade,
+      role: 'technician' as UserRole,
+      status: 'active' as const,
+      assignedBuildingIds,
+      supervisorEmails: targetSupEmails,
+    };
+
+    const grantRef = doc(db, 'access_grants', canonGrantId);
+    const existingGrantSnap = await getDoc(grantRef).catch(() => null);
+    if (
+      existingGrantSnap?.exists() &&
+      (existingGrantSnap.data() as { techId?: string }).techId !== techId
+    ) {
+      await deleteDoc(grantRef).catch(() => undefined);
+    }
+
+    const batch = writeBatch(db);
+    if (primary) {
+      batch.update(doc(db, 'technicians', techId), {
+        name: techDocData.name,
+        email: techDocData.email,
+        authMode: techDocData.authMode,
+        authEmail: techDocData.authEmail,
+        authUid: techDocData.authUid,
+        badgeId: techDocData.badgeId,
+        trade: techDocData.trade,
+        phone: techDocData.phone,
+        role: techDocData.role,
+        status: techDocData.status,
+        assignedBuildingIds: techDocData.assignedBuildingIds,
+        supervisorEmails: techDocData.supervisorEmails,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(doc(db, 'technicians', techId), {
+        ...techDocData,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+    batch.set(grantRef, {
+      ...grantPayload,
+      createdAt: primary?.createdAt || serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
+
+    workingTechs = workingTechs.filter((t) => !removedDuplicateTechIds.has(t.id) && t.id !== techId);
+    workingTechs.push(techDocData);
+
+    accounts.push({
+      role: 'technician',
+      name: preset.name,
+      loginId: preset.badgeId,
+      password: preset.badgeId,
+      authStatus,
+      mergedDuplicates: extras.length,
+    });
+  }
+
+  // 4. Update GST1 memberEmails & propagate to all GST1 collections
+  const nextMembers = buildBuildingMemberEmails(gst1Id, workingTechs, targetSupEmails);
+  await updateDoc(doc(db, 'buildings', gst1Id), {
+    supervisorEmails: targetSupEmails,
+    memberEmails: nextMembers,
+    updatedAt: serverTimestamp(),
+  });
+  workingBuildings = workingBuildings.map((b) =>
+    b.id === gst1Id
+      ? { ...b, supervisorEmails: targetSupEmails, memberEmails: nextMembers }
+      : b
+  );
+
+  await propagateBuildingAccessToDocs(gst1Id, targetSupEmails, nextMembers, {
+    email: ctx.email,
+    role: ctx.role,
+  });
+
+  // 5. Re-link & canonicalize all existing work logs, overtime, readings, and schedules without duplicating
+  const repairSummary = await repairStaffRecordOwnership({
+    buildings: workingBuildings,
+    technicians: workingTechs,
+    workLogs: ctx.workLogs,
+    overtimeLogs: ctx.overtimeLogs,
+    utilityReadings: ctx.utilityReadings,
+    tenantSchedules: ctx.tenantSchedules,
+    caller: { email: ctx.email, role: ctx.role },
+  });
+
+  return {
+    buildingId: gst1Id,
+    supervisorEmail: supAuthEmail,
+    accounts,
+    createdCount,
+    alreadyExistsCount,
+    providerDisabled,
+    dedupedProfilesCount,
+    repairSummary,
   };
 }
 
@@ -1796,6 +2662,7 @@ export async function submitWorkLog(
     pendingReason: string;
     remarks?: string;
     supervisorName?: string;
+    forTechnician?: Technician | null;
   },
   ctx: {
     uid: string;
@@ -1804,8 +2671,22 @@ export async function submitWorkLog(
     isEffectiveOnline: boolean;
   }
 ): Promise<{ id: string; offlineQueued: boolean }> {
+  if (params.status !== 'Completed' && !params.finishTime.trim()) {
+    throw new Error(
+      'Enter Finish Time to close this Pending / On Hold log for today’s productive hours before continuing it on another visit.'
+    );
+  }
   const id = generateSafeId('wl');
   const cleanEmail = normalizeEmail(ctx.email);
+  const attrTech = params.forTechnician;
+  const attrUid = attrTech ? clampStr(attrTech.authUid || '', MAX_LENGTHS.id) : ctx.uid;
+  const attrName = attrTech
+    ? clampStr(attrTech.name, MAX_LENGTHS.techName)
+    : clampStr(ctx.name || cleanEmail.split('@')[0], MAX_LENGTHS.techName);
+  const attrEmail = attrTech
+    ? clampStr(normalizeEmail(attrTech.authEmail || attrTech.email || cleanEmail), MAX_LENGTHS.email)
+    : clampStr(cleanEmail, MAX_LENGTHS.email);
+
   const timeValidation = validateSingleWorkDuration(
     params.receivedTime,
     params.startTime,
@@ -1837,18 +2718,24 @@ export async function submitWorkLog(
     status: params.status,
     pendingReason: params.status === 'Completed' ? '' : clampStr(params.pendingReason, MAX_LENGTHS.pendingReason),
     remarks: clampStr(params.remarks || '', MAX_LENGTHS.remarks),
-    technicianUid: ctx.uid,
-    technicianName: clampStr(ctx.name || cleanEmail.split('@')[0], MAX_LENGTHS.techName),
-    technicianEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+    technicianUid: attrUid,
+    technicianName: attrName,
+    technicianEmail: attrEmail,
     supervisorName: clampStr(params.supervisorName || params.building.facilityManager || '', MAX_LENGTHS.techName),
     supervisorEmails: params.building.supervisorEmails,
     buildingMemberEmails: params.building.memberEmails,
     source: ctx.isEffectiveOnline ? 'portal' : 'offline_sync',
+    parentWorkLogId: '',
+    rootWorkLogId: id,
+    sessionNumber: 1,
+    supersededByLogId: '',
+    chainResolved: params.status === 'Completed',
   };
 
   if (!ctx.isEffectiveOnline) {
     await enqueueOfflineOp({
       queueId: generateSafeId('op'),
+      action: 'set',
       kind: 'work_log',
       collectionName: 'work_logs',
       docId: id,
@@ -1870,6 +2757,7 @@ export async function submitWorkLog(
     if (isOfflineNetworkError(error)) {
       await enqueueOfflineOp({
         queueId: generateSafeId('op'),
+        action: 'set',
         kind: 'work_log',
         collectionName: 'work_logs',
         docId: id,
@@ -1904,6 +2792,11 @@ export async function updateWorkLog(
   },
   actor: { name: string; role: UserRole }
 ): Promise<void> {
+  if (updates.status !== 'Completed' && !updates.finishTime.trim()) {
+    throw new Error(
+      'Enter Finish Time to close this Pending / On Hold log for today’s productive hours before continuing it on another visit.'
+    );
+  }
   const startRef = updates.startTime ?? existing.startTime;
   const recvRef = updates.receivedTime ?? existing.receivedTime;
   const finRef = updates.finishTime;
@@ -1929,6 +2822,7 @@ export async function updateWorkLog(
   }
 
   const cleanPending = updates.status === 'Completed' ? '' : clampStr(updates.pendingReason, MAX_LENGTHS.pendingReason);
+  const chainResolved = updates.status === 'Completed' || Boolean(existing.chainResolved);
 
   try {
     if (actor.role === 'supervisor' || actor.role === 'admin') {
@@ -1950,6 +2844,7 @@ export async function updateWorkLog(
         pendingReason: cleanPending,
         remarks: nextRemarks,
         supervisorName: clampStr(actor.name, MAX_LENGTHS.techName),
+        chainResolved,
         updatedAt: serverTimestamp(),
       });
     } else {
@@ -1961,11 +2856,180 @@ export async function updateWorkLog(
         materials: clampStr(updates.materials, MAX_LENGTHS.materials),
         pendingReason: cleanPending,
         remarks: nextRemarks,
+        chainResolved,
         updatedAt: serverTimestamp(),
       });
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `work_logs/${existing.id}`);
+  }
+}
+
+export async function continueWorkLog(
+  parent: WorkLog,
+  params: {
+    building: Building;
+    logDate: string;
+    shift: WorkShift;
+    woNumber: string;
+    location: string;
+    category: string;
+    priority: WorkPriority;
+    complaint: string;
+    action: string;
+    materials: string;
+    receivedTime: string;
+    startTime: string;
+    finishTime: string;
+    status: WorkStatus;
+    pendingReason: string;
+    remarks?: string;
+  },
+  allWorkLogs: WorkLog[],
+  ctx: {
+    uid: string;
+    name: string;
+    email: string;
+    role: UserRole;
+    isEffectiveOnline: boolean;
+  }
+): Promise<{ id: string; offlineQueued: boolean }> {
+  if (!params.startTime.trim() || !params.finishTime.trim()) {
+    throw new Error(
+      'Enter both Start Time and Finish Time for this continuation visit so daily productive hours are counted accurately.'
+    );
+  }
+  if (params.status !== 'Completed' && !params.pendingReason.trim()) {
+    throw new Error('Specify a Pending / On Hold reason if this job still needs another visit.');
+  }
+
+  const timeValidation = validateSingleWorkDuration(
+    params.receivedTime,
+    params.startTime,
+    params.finishTime
+  );
+  if (!timeValidation.valid) {
+    throw new Error(timeValidation.error);
+  }
+
+  const newId = generateSafeId('wl');
+  const cleanEmail = normalizeEmail(ctx.email);
+  const rootId = parent.rootWorkLogId || parent.id;
+  const nextSession = Math.min(100, (parent.sessionNumber || 1) + 1);
+  const chainResolved = params.status === 'Completed';
+  const sessionNote = `Continuation Session #${nextSession} (linked to Session #${parent.sessionNumber || 1} on ${parent.logDate})`;
+  const mergedRemarks = clampStr(
+    params.remarks?.trim() ? `${params.remarks.trim()} | ${sessionNote}` : sessionNote,
+    MAX_LENGTHS.remarks
+  );
+
+  const payload: Omit<WorkLog, 'createdAt' | 'updatedAt'> = {
+    id: newId,
+    buildingId: params.building.id,
+    buildingCode: clampStr(params.building.code, MAX_LENGTHS.buildingCode),
+    buildingName: clampStr(params.building.name, MAX_LENGTHS.buildingName),
+    logDate: clampStr(params.logDate, MAX_LENGTHS.dateStr) || new Date().toISOString().slice(0, 10),
+    shift: params.shift,
+    woNumber: clampStr(params.woNumber || parent.woNumber, MAX_LENGTHS.woNumber),
+    location: clampStr(params.location || parent.location, MAX_LENGTHS.locationZone),
+    category: clampStr(params.category || parent.category, MAX_LENGTHS.discipline) || 'General Maintenance',
+    priority: params.priority,
+    complaint: clampStr(params.complaint || parent.complaint, MAX_LENGTHS.complaint),
+    action: clampStr(params.action, MAX_LENGTHS.action),
+    materials: clampStr(params.materials, MAX_LENGTHS.materials),
+    receivedTime: clampStr(params.receivedTime, MAX_LENGTHS.timeStr),
+    startTime: clampStr(params.startTime, MAX_LENGTHS.timeStr),
+    finishTime: clampStr(params.finishTime, MAX_LENGTHS.timeStr),
+    durationHours: timeValidation.hours,
+    status: params.status,
+    pendingReason: chainResolved ? '' : clampStr(params.pendingReason, MAX_LENGTHS.pendingReason),
+    remarks: mergedRemarks,
+    technicianUid: ctx.uid,
+    technicianName: clampStr(ctx.name || cleanEmail.split('@')[0], MAX_LENGTHS.techName),
+    technicianEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+    supervisorName: clampStr(parent.supervisorName || params.building.facilityManager || '', MAX_LENGTHS.techName),
+    supervisorEmails: params.building.supervisorEmails,
+    buildingMemberEmails: params.building.memberEmails,
+    source: ctx.isEffectiveOnline ? 'portal' : 'offline_sync',
+    parentWorkLogId: parent.id,
+    rootWorkLogId: rootId,
+    sessionNumber: nextSession,
+    supersededByLogId: '',
+    chainResolved,
+  };
+
+  const isSupOrAdmin = ctx.role === 'supervisor' || ctx.role === 'admin';
+  const ancestorUpdates = chainResolved
+    ? allWorkLogs.filter((a) => {
+        if (a.id === parent.id || a.id === newId) return false;
+        const aRoot = a.rootWorkLogId || a.id;
+        if (aRoot !== rootId && a.id !== rootId) return false;
+        if (a.chainResolved) return false;
+        return (
+          isSupOrAdmin ||
+          (a.status !== 'Completed' &&
+            (a.technicianUid === ctx.uid || normalizeEmail(a.technicianEmail) === cleanEmail))
+        );
+      })
+    : [];
+
+  const queueOfflineContinuation = async () => {
+    await enqueueOfflineOp({
+      queueId: generateSafeId('op'),
+      action: 'set',
+      kind: 'work_log',
+      collectionName: 'work_logs',
+      docId: newId,
+      payload: { ...payload, source: 'offline_sync' },
+      queuedAtIso: new Date().toISOString(),
+      attempts: 0,
+    });
+    await enqueueOfflineOp({
+      queueId: generateSafeId('op'),
+      action: 'update',
+      kind: 'work_log',
+      collectionName: 'work_logs',
+      docId: parent.id,
+      payload: {
+        supersededByLogId: newId,
+        chainResolved,
+      },
+      queuedAtIso: new Date().toISOString(),
+      attempts: 0,
+    });
+  };
+
+  if (!ctx.isEffectiveOnline) {
+    await queueOfflineContinuation();
+    return { id: newId, offlineQueued: true };
+  }
+
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'work_logs', newId), {
+      ...payload,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    batch.update(doc(db, 'work_logs', parent.id), {
+      supersededByLogId: newId,
+      chainResolved,
+      updatedAt: serverTimestamp(),
+    });
+    for (const anc of ancestorUpdates) {
+      batch.update(doc(db, 'work_logs', anc.id), {
+        chainResolved: true,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+    return { id: newId, offlineQueued: false };
+  } catch (error) {
+    if (isOfflineNetworkError(error)) {
+      await queueOfflineContinuation();
+      return { id: newId, offlineQueued: true };
+    }
+    handleFirestoreError(error, OperationType.WRITE, `work_logs/${newId}`);
   }
 }
 
@@ -1987,6 +3051,7 @@ export async function submitOvertimeLog(
     workType: string;
     location: string;
     workDescription: string;
+    forTechnician?: Technician | null;
   },
   ctx: {
     uid: string;
@@ -1999,6 +3064,17 @@ export async function submitOvertimeLog(
 ): Promise<{ id: string; offlineQueued: boolean }> {
   const id = generateSafeId('ot');
   const cleanEmail = normalizeEmail(ctx.email);
+  const attrTech = params.forTechnician;
+  const attrUid = attrTech ? clampStr(attrTech.authUid || '', MAX_LENGTHS.id) : ctx.uid;
+  const attrName = attrTech
+    ? clampStr(attrTech.name, MAX_LENGTHS.techName)
+    : clampStr(ctx.name || cleanEmail.split('@')[0], MAX_LENGTHS.techName);
+  const attrBadge = attrTech
+    ? clampStr(attrTech.badgeId || '', MAX_LENGTHS.badgeId)
+    : clampStr(ctx.badgeId || '', MAX_LENGTHS.badgeId);
+  const attrEmail = attrTech
+    ? clampStr(normalizeEmail(attrTech.authEmail || attrTech.email || cleanEmail), MAX_LENGTHS.email)
+    : clampStr(cleanEmail, MAX_LENGTHS.email);
   const hours = calculateTimeHours(params.fromTime, params.toTime);
 
   const payload: Omit<OvertimeLog, 'createdAt' | 'updatedAt'> = {
@@ -2016,10 +3092,10 @@ export async function submitOvertimeLog(
     workDescription: clampStr(params.workDescription, MAX_LENGTHS.workDescription),
     approvalStatus: ctx.role === 'supervisor' || ctx.role === 'admin' ? 'approved' : 'pending_approval',
     reviewNotes: ctx.role === 'supervisor' || ctx.role === 'admin' ? 'Logged by supervisor.' : '',
-    technicianUid: ctx.uid,
-    technicianName: clampStr(ctx.name || cleanEmail.split('@')[0], MAX_LENGTHS.techName),
-    technicianBadgeId: clampStr(ctx.badgeId || '', MAX_LENGTHS.badgeId),
-    technicianEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+    technicianUid: attrUid,
+    technicianName: attrName,
+    technicianBadgeId: attrBadge,
+    technicianEmail: attrEmail,
     supervisorEmails: params.building.supervisorEmails,
     buildingMemberEmails: params.building.memberEmails,
     source: ctx.isEffectiveOnline ? 'portal' : 'offline_sync',
@@ -2232,6 +3308,7 @@ export async function submitUtilityReading(
     readingDate: string;
     readingValue: number;
     notes: string;
+    forTechnician?: Technician | null;
   },
   ctx: {
     uid: string;
@@ -2242,6 +3319,14 @@ export async function submitUtilityReading(
 ): Promise<{ id: string; offlineQueued: boolean }> {
   const id = generateSafeId('urd');
   const cleanEmail = normalizeEmail(ctx.email);
+  const attrTech = params.forTechnician;
+  const attrUid = attrTech ? clampStr(attrTech.authUid || '', MAX_LENGTHS.id) : ctx.uid;
+  const attrName = attrTech
+    ? clampStr(attrTech.name, MAX_LENGTHS.techName)
+    : clampStr(ctx.name || cleanEmail.split('@')[0], MAX_LENGTHS.techName);
+  const attrEmail = attrTech
+    ? clampStr(normalizeEmail(attrTech.authEmail || attrTech.email || cleanEmail), MAX_LENGTHS.email)
+    : clampStr(cleanEmail, MAX_LENGTHS.email);
   const val = Math.max(0, Math.min(999999999, Number(params.readingValue) || 0));
 
   const payload: Omit<UtilityReading, 'createdAt' | 'updatedAt'> = {
@@ -2256,9 +3341,9 @@ export async function submitUtilityReading(
     readingDate: clampStr(params.readingDate, MAX_LENGTHS.dateStr),
     readingValue: val,
     notes: clampStr(params.notes, 400),
-    technicianUid: ctx.uid,
-    technicianName: clampStr(ctx.name || cleanEmail.split('@')[0], MAX_LENGTHS.techName),
-    technicianEmail: clampStr(cleanEmail, MAX_LENGTHS.email),
+    technicianUid: attrUid,
+    technicianName: attrName,
+    technicianEmail: attrEmail,
     supervisorEmails: params.building.supervisorEmails,
     buildingMemberEmails: params.building.memberEmails,
     source: ctx.isEffectiveOnline ? 'portal' : 'offline_sync',

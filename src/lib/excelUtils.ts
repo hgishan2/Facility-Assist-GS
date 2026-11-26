@@ -1301,6 +1301,9 @@ export function exportWorkLogsWorkbook(
       'Materials Used',
       'Status',
       'Pending Reason',
+      'Session #',
+      'Root Job ID',
+      'Chain Resolved',
       'Remarks / Audit Trail',
     ],
     ...workLogs
@@ -1324,6 +1327,9 @@ export function exportWorkLogsWorkbook(
         w.materials || '-',
         w.status,
         w.pendingReason || '-',
+        w.sessionNumber || 1,
+        w.rootWorkLogId || w.id,
+        w.status === 'Completed' || w.chainResolved ? 'Yes' : 'No',
         w.remarks || '-',
       ]),
   ];
@@ -1332,7 +1338,8 @@ export function exportWorkLogsWorkbook(
   wsAll['!cols'] = [
     { wch: 12 }, { wch: 24 }, { wch: 8 }, { wch: 14 }, { wch: 18 }, { wch: 18 },
     { wch: 11 }, { wch: 32 }, { wch: 22 }, { wch: 32 }, { wch: 10 }, { wch: 10 },
-    { wch: 10 }, { wch: 12 }, { wch: 22 }, { wch: 12 }, { wch: 24 }, { wch: 34 },
+    { wch: 10 }, { wch: 12 }, { wch: 22 }, { wch: 12 }, { wch: 24 }, { wch: 10 },
+    { wch: 20 }, { wch: 13 }, { wch: 34 },
   ];
   XLSX.utils.book_append_sheet(wb, wsAll, safeSheetName('Work_Logs_Register', usedNames));
 
@@ -1362,9 +1369,11 @@ export function exportWorkLogsWorkbook(
         'Received',
         'Start',
         'Finish',
+        'Duration (h)',
         'Materials',
         'Status',
         'Pending Reason',
+        'Session #',
         'Remarks',
       ],
       ...dayRows.map((w, idx) => [
@@ -1381,9 +1390,11 @@ export function exportWorkLogsWorkbook(
         w.receivedTime || '-',
         w.startTime || '-',
         w.finishTime || '-',
+        w.durationHours || 0,
         w.materials || '-',
         w.status,
         w.pendingReason || '-',
+        w.sessionNumber || 1,
         w.remarks || '-',
       ]),
     ];
@@ -1391,7 +1402,7 @@ export function exportWorkLogsWorkbook(
     wsDay['!cols'] = [
       { wch: 6 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 30 },
       { wch: 22 }, { wch: 30 }, { wch: 18 }, { wch: 11 }, { wch: 10 }, { wch: 10 },
-      { wch: 10 }, { wch: 20 }, { wch: 12 }, { wch: 22 }, { wch: 30 },
+      { wch: 10 }, { wch: 12 }, { wch: 20 }, { wch: 12 }, { wch: 22 }, { wch: 10 }, { wch: 30 },
     ];
     XLSX.utils.book_append_sheet(wb, wsDay, safeSheetName(day, usedNames));
   }

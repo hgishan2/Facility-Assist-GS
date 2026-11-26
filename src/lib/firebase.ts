@@ -21,6 +21,7 @@ import firebaseConfig from '../../firebase-applet-config.json';
 import {
   ADMIN_AUTH_EMAIL,
   badgeToAuthEmail,
+  normalizePasscodeForAuth,
   supervisorToAuthEmail,
 } from '../types';
 
@@ -164,7 +165,7 @@ export async function claimAdminAuthAccount(password: string) {
 
 export async function signInWithBadgePasscode(badgeId: string, passcode: string) {
   const authEmail = badgeToAuthEmail(badgeId);
-  return signInWithEmailAndPassword(auth, authEmail, passcode);
+  return signInWithEmailAndPassword(auth, authEmail, normalizePasscodeForAuth(passcode));
 }
 
 export async function provisionUserAuthAccount(

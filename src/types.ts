@@ -204,6 +204,11 @@ export interface WorkLog {
   supervisorEmails: string[];
   buildingMemberEmails: string[];
   source: 'portal' | 'offline_sync';
+  parentWorkLogId?: string;
+  rootWorkLogId?: string;
+  sessionNumber?: number;
+  supersededByLogId?: string;
+  chainResolved?: boolean;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -335,6 +340,7 @@ export type OfflineOpKind = 'work_log' | 'overtime_log' | 'utility_reading' | 't
 
 export interface OfflineOpItem {
   queueId: string;
+  action?: 'set' | 'update';
   kind: OfflineOpKind;
   collectionName: 'work_logs' | 'overtime_logs' | 'utility_readings' | 'tenant_schedules';
   docId: string;
@@ -529,6 +535,37 @@ export function badgeToAuthEmail(badgeId: string): string {
   return `${slug}@siteledger.internal`;
 }
 
+/**
+ * Firebase Auth enforces a 6-character minimum password length.
+ * Short employee codes (e.g. 4-digit "3765") are deterministically padded
+ * during both provisioning and sign-in while 6+ char passcodes remain untouched.
+ */
+export function normalizePasscodeForAuth(passcode: string): string {
+  const clean = passcode.trim();
+  if (clean.length >= 6 || clean.length === 0) return clean;
+  return `${clean}#FA`;
+}
+
+export const GST1_SUPERVISOR_PRESET = {
+  name: 'ISHAN MADHUSHANKA',
+  username: '713361',
+  password: '713361',
+  trade: 'Facility Supervisor',
+  buildingCode: 'GST1',
+} as const;
+
+export const GST1_TECHNICIANS_PRESET = [
+  { name: 'MEHEDI HASAN LIYAKAT ALI', badgeId: '3765', trade: 'Mason/Painter' },
+  { name: 'MOHAMMAD KAUSHAR ALI', badgeId: '711312', trade: 'Plumber' },
+  { name: 'AJEESH MOHANKUMAR GEETHA', badgeId: '712371', trade: 'Painter' },
+  { name: 'NAGENDRA VISHWAKARMA', badgeId: '712892', trade: 'General Technician' },
+  { name: 'RAM JATAN MAHADEV', badgeId: '713052', trade: 'Carpenter' },
+  { name: 'MUHAMMAD JAHANGEER', badgeId: '713150', trade: 'AC Technician' },
+  { name: 'ALI HASSAN', badgeId: '713502', trade: 'Electrician' },
+  { name: 'IMTIYAZ KAMRUDDIN', badgeId: '713520', trade: 'AC Technician' },
+  { name: 'MADHAB CHARAN', badgeId: '713542', trade: 'Plumber' },
+] as const;
+
 export function emailToGrantId(email: string): string {
   return normalizeEmail(email).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
 }
@@ -544,3 +581,143 @@ export function clampStr(value: unknown, maxLen: number): string {
   const s = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
   return s.length > maxLen ? s.slice(0, maxLen) : s;
 }
+
+const TECH_TOKEN_ALIASES: Record<string, string> = {
+  muhammad: 'mohammad',
+  mohammed: 'mohammad',
+  mohammad: 'mohammad',
+  muhammed: 'mohammad',
+  mohamed: 'mohammad',
+  mohd: 'mohammad',
+  md: 'mohammad',
+  hassan: 'hasan',
+  hasan: 'hasan',
+  hussain: 'husain',
+  husain: 'husain',
+  hossein: 'husain',
+  ahmad: 'ahmad',
+  ahmed: 'ahmad',
+  viswakarma: 'vishwakarma',
+  vishwakarma: 'vishwakarma',
+  kaushar: 'kaushar',
+  kausar: 'kaushar',
+  jahangeer: 'jahangeer',
+  jahangir: 'jahangeer',
+  imtiyaz: 'imtiyaz',
+  imtiaz: 'imtiyaz',
+  ajeesh: 'ajeesh',
+  ajish: 'ajeesh',
+  nagendra: 'nagendra',
+  nagendar: 'nagendra',
+  mehedi: 'mehedi',
+  mehadi: 'mehedi',
+  mehedy: 'mehedi',
+  mahadi: 'mehedi',
+  madhab: 'madhab',
+  madhav: 'madhab',
+};
+
+export function normalizeTechNameTokens(raw: string): string[] {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[._\-\/(),]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  if (!cleaned) return [];
+  return cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map((tok) => TECH_TOKEN_ALIASES[tok] || tok);
+}
+
+/**
+ * Matches a raw technician name (including partial names, aliases, and transliterations)
+ * or badge ID against the roster of technicians/staff.
+ * Checks exact badge/full-name matches before subset token matching to avoid false collisions
+ * (e.g., "Ali Hassan" vs "Mehedi Hasan Liyakat Ali").
+ */
+export function matchTechnicianByName(
+  rawName: string,
+  technicians: Technician[]
+): Technician | null {
+  const trimmed = (rawName || '').trim();
+  if (!trimmed || technicians.length === 0) return null;
+
+  const upper = trimmed.toUpperCase();
+  const roleRank = (t: Technician) =>
+    t.role === 'technician' && t.status === 'active'
+      ? 3
+      : t.role === 'technician'
+        ? 2
+        : t.status === 'active'
+          ? 1
+          : 0;
+
+  // Priority 1: Exact badge ID match
+  const byBadge = technicians
+    .filter((t) => t.badgeId && t.badgeId.trim().toUpperCase() === upper)
+    .sort((a, b) => roleRank(b) - roleRank(a));
+  if (byBadge.length > 0) return byBadge[0];
+
+  // Priority 2: Exact authEmail / email match
+  const lower = trimmed.toLowerCase();
+  const byEmail = technicians
+    .filter(
+      (t) =>
+        normalizeEmail(t.authEmail || '') === lower ||
+        normalizeEmail(t.email || '') === lower
+    )
+    .sort((a, b) => roleRank(b) - roleRank(a));
+  if (byEmail.length > 0) return byEmail[0];
+
+  const queryTokens = normalizeTechNameTokens(trimmed);
+  if (queryTokens.length === 0) return null;
+  const queryNorm = queryTokens.join(' ');
+
+  // Priority 3: Exact normalized full name match
+  const exactNorm = technicians
+    .filter((t) => normalizeTechNameTokens(t.name).join(' ') === queryNorm)
+    .sort((a, b) => roleRank(b) - roleRank(a));
+  if (exactNorm.length > 0) return exactNorm[0];
+
+  // Priority 4: Subset token matching with coverage & first-token tie-break
+  let bestCandidate: Technician | null = null;
+  let bestScore = -1;
+
+  for (const t of technicians) {
+    const techTokens = normalizeTechNameTokens(t.name);
+    if (techTokens.length === 0) continue;
+
+    const techSet = new Set(techTokens);
+    const querySet = new Set(queryTokens);
+
+    const allQueryInTech = queryTokens.every((qt) => techSet.has(qt));
+    const allTechInQuery = techTokens.every((tt) => querySet.has(tt));
+
+    if (!allQueryInTech && !allTechInQuery) continue;
+
+    const matchedCount = allQueryInTech ? queryTokens.length : techTokens.length;
+    const coverage = matchedCount / Math.max(queryTokens.length, techTokens.length);
+    const firstTokenBonus = queryTokens[0] === techTokens[0] ? 0.15 : 0;
+    const score = coverage + firstTokenBonus + roleRank(t) * 0.01;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = t;
+    }
+  }
+
+  if (bestCandidate) return bestCandidate;
+
+  // Priority 5: Prefix fallback for truncated single-token queries (>= 4 chars)
+  if (queryTokens.length === 1 && queryTokens[0].length >= 4) {
+    const prefix = queryTokens[0];
+    const prefixMatches = technicians
+      .filter((t) => normalizeTechNameTokens(t.name).some((tt) => tt.startsWith(prefix)))
+      .sort((a, b) => roleRank(b) - roleRank(a));
+    if (prefixMatches.length === 1) return prefixMatches[0];
+  }
+
+  return null;
+}
+

@@ -1,8 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  ArrowRightCircle,
   CheckCircle2,
   Clock,
   Download,
+  Link2,
   Pencil,
   Plus,
   Search,
@@ -10,15 +13,21 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { deleteWorkLog, submitWorkLog, updateWorkLog } from '../lib/dataService';
+import { continueWorkLog, deleteWorkLog, submitWorkLog, updateWorkLog } from '../lib/dataService';
 import { exportWorkLogsWorkbook } from '../lib/excelUtils';
 import {
+  getActivePendingWorkLogs,
+  getWorkLogChain,
+  isActivePendingWorkLog,
+  isoDayDiff,
   MAX_SINGLE_WORK_HOURS,
   STANDARD_DAILY_DUTY_HOURS,
   validateSingleWorkDuration,
 } from '../lib/operationsAnalytics';
 import {
   Building,
+  matchTechnicianByName,
+  normalizeEmail,
   Technician,
   UserRole,
   WORK_CATEGORIES,
@@ -49,10 +58,9 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
   onToast,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
 
-  const [dateFrom, setDateFrom] = useState(thirtyDaysAgo);
-  const [dateTo, setDateTo] = useState(today);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | WorkStatus>('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | WorkPriority>('all');
@@ -77,6 +85,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
   const [finishTime, setFinishTime] = useState('');
   const [status, setStatus] = useState<WorkStatus>('Completed');
   const [pendingReason, setPendingReason] = useState('');
+  const [targetTechId, setTargetTechId] = useState('self');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -101,6 +110,23 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
   const [editError, setEditError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // Continue / complete pending job in a connected new visit record
+  const [continuingLog, setContinuingLog] = useState<WorkLog | null>(null);
+  const [contLogDate, setContLogDate] = useState(today);
+  const [contShift, setContShift] = useState<WorkShift>('Day');
+  const [contStartTime, setContStartTime] = useState('');
+  const [contFinishTime, setContFinishTime] = useState('');
+  const [contStatus, setContStatus] = useState<WorkStatus>('Completed');
+  const [contAction, setContAction] = useState('');
+  const [contMaterials, setContMaterials] = useState('');
+  const [contPendingReason, setContPendingReason] = useState('');
+  const [contSaving, setContSaving] = useState(false);
+  const [contError, setContError] = useState<string | null>(null);
+
+  // Chain timeline viewer
+  const [chainModalLog, setChainModalLog] = useState<WorkLog | null>(null);
+  const [showAllReminders, setShowAllReminders] = useState(false);
+
   const isSupervisor = user.role === 'supervisor' || user.role === 'admin';
 
   const openCreateModal = () => {
@@ -119,6 +145,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
     setFinishTime('');
     setStatus('Completed');
     setPendingReason('');
+    setTargetTechId('self');
     setFormError(null);
     setFormOpen(true);
   };
@@ -143,6 +170,31 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
     setEditError(null);
   };
 
+  const openContinueModal = (w: WorkLog) => {
+    setContinuingLog(w);
+    setContLogDate(today);
+    setContShift('Day');
+    setContStartTime('');
+    setContFinishTime('');
+    setContStatus('Completed');
+    setContAction('');
+    setContMaterials('');
+    setContPendingReason('');
+    setContError(null);
+  };
+
+  const techRoster = useMemo(
+    () => technicians.filter((t) => t.role === 'technician'),
+    [technicians]
+  );
+
+  const canonicalTechLabel = (rawName: string, rawEmail?: string): string => {
+    const byEmail =
+      rawEmail && techRoster.find((t) => normalizeEmail(t.authEmail || t.email) === normalizeEmail(rawEmail));
+    if (byEmail) return byEmail.name;
+    return matchTechnicianByName(rawName, techRoster)?.name || rawName;
+  };
+
   const filteredLogs = useMemo(() => {
     const q = search.trim().toLowerCase();
     return workLogs.filter((w) => {
@@ -152,7 +204,12 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
       if (statusFilter !== 'all' && w.status !== statusFilter) return false;
       if (priorityFilter !== 'all' && w.priority !== priorityFilter) return false;
       if (categoryFilter !== 'all' && w.category !== categoryFilter) return false;
-      if (techFilter !== 'all' && w.technicianName !== techFilter) return false;
+      if (
+        techFilter !== 'all' &&
+        canonicalTechLabel(w.technicianName, w.technicianEmail) !== techFilter
+      ) {
+        return false;
+      }
       if (q) {
         const hay =
           `${w.woNumber} ${w.location} ${w.complaint} ${w.action} ${w.technicianName} ${w.buildingCode}`.toLowerCase();
@@ -170,17 +227,27 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
     categoryFilter,
     techFilter,
     search,
+    techRoster,
   ]);
 
   const techNames = useMemo(() => {
     const s = new Set<string>();
-    technicians.forEach((t) => s.add(t.name));
-    workLogs.forEach((w) => s.add(w.technicianName));
-    return Array.from(s).sort();
-  }, [technicians, workLogs]);
+    techRoster.forEach((t) => s.add(t.name));
+    workLogs.forEach((w) => s.add(canonicalTechLabel(w.technicianName, w.technicianEmail)));
+    return Array.from(s).filter(Boolean).sort();
+  }, [techRoster, workLogs]);
+
+  const activePendingLogs = useMemo(
+    () => getActivePendingWorkLogs(workLogs),
+    [workLogs]
+  );
+  const activePendingIds = useMemo(
+    () => new Set(activePendingLogs.map((w) => w.id)),
+    [activePendingLogs]
+  );
 
   const completedCount = filteredLogs.filter((w) => w.status === 'Completed').length;
-  const openCount = filteredLogs.filter((w) => w.status !== 'Completed').length;
+  const openCount = filteredLogs.filter((w) => activePendingIds.has(w.id)).length;
 
   const createTimeValidation = validateSingleWorkDuration(receivedTime, startTime, finishTime);
   const liveHours = createTimeValidation.hours;
@@ -196,6 +263,9 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
         editRecvRef !== editingLog.receivedTime)
   );
 
+  const contTimeValidation = validateSingleWorkDuration('', contStartTime, contFinishTime);
+  const liveContHours = contTimeValidation.hours;
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     const b = buildings.find((item) => item.id === buildingId);
@@ -205,6 +275,12 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
     }
     if (!location.trim() || !complaint.trim()) {
       setFormError('Location and Complaint / Work Details are required.');
+      return;
+    }
+    if (status !== 'Completed' && !finishTime.trim()) {
+      setFormError(
+        'Enter Finish Time to close this Pending / On Hold log for today’s productive hours before continuing it on another visit.'
+      );
       return;
     }
     if (!createTimeValidation.valid) {
@@ -222,6 +298,10 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
     setSubmitting(true);
     setFormError(null);
     try {
+      const selectedTech =
+        isSupervisor && targetTechId !== 'self'
+          ? technicians.find((t) => t.id === targetTechId) || null
+          : null;
       const res = await submitWorkLog(
         {
           building: b,
@@ -239,6 +319,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
           finishTime,
           status,
           pendingReason,
+          forTechnician: selectedTech,
         },
         {
           uid: user.uid,
@@ -263,6 +344,12 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingLog) return;
+    if (editStatus !== 'Completed' && !editFinishTime.trim()) {
+      setEditError(
+        'Enter Finish Time to close this Pending / On Hold log for today’s productive hours before continuing it on another visit.'
+      );
+      return;
+    }
     if (editTimesModified && !editTimeValidation.valid) {
       setEditError(
         editTimeValidation.error ||
@@ -312,6 +399,79 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
       setEditError(err instanceof Error ? err.message : 'Unable to update work log.');
     } finally {
       setEditSaving(false);
+    }
+  };
+
+  const handleContinueSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!continuingLog) return;
+    const b =
+      buildings.find((item) => item.id === continuingLog.buildingId) || buildings[0];
+    if (!b) {
+      setContError('Building record not found.');
+      return;
+    }
+    if (!contStartTime.trim() || !contFinishTime.trim()) {
+      setContError(
+        'Enter both Start Time and Finish Time for this visit so productive hours are accurately logged.'
+      );
+      return;
+    }
+    if (!contTimeValidation.valid) {
+      setContError(
+        contTimeValidation.error ||
+          `Single work time cannot exceed ${MAX_SINGLE_WORK_HOURS} hours.`
+      );
+      return;
+    }
+    if (contStatus !== 'Completed' && !contPendingReason.trim()) {
+      setContError('Specify a Pending / On Hold reason if this work still requires another visit.');
+      return;
+    }
+
+    setContSaving(true);
+    setContError(null);
+    try {
+      const res = await continueWorkLog(
+        continuingLog,
+        {
+          building: b,
+          logDate: contLogDate,
+          shift: contShift,
+          woNumber: continuingLog.woNumber,
+          location: continuingLog.location,
+          category: continuingLog.category,
+          priority: continuingLog.priority,
+          complaint: continuingLog.complaint,
+          action: contAction,
+          materials: contMaterials,
+          receivedTime: '',
+          startTime: contStartTime,
+          finishTime: contFinishTime,
+          status: contStatus,
+          pendingReason: contPendingReason,
+        },
+        workLogs,
+        {
+          uid: user.uid,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          isEffectiveOnline,
+        }
+      );
+      setContinuingLog(null);
+      onToast(
+        res.offlineQueued
+          ? 'Continuation session saved offline and queued for sync.'
+          : contStatus === 'Completed'
+            ? 'Job completed in linked follow-up session. Pending reminder cleared.'
+            : 'Follow-up session closed to Pending. Reminder stays active.'
+      );
+    } catch (err) {
+      setContError(err instanceof Error ? err.message : 'Unable to save continuation session.');
+    } finally {
+      setContSaving(false);
     }
   };
 
@@ -366,9 +526,104 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
         </div>
       </div>
 
+      {/* Active Still-Pending Reminders Banner */}
+      {activePendingLogs.length > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800 rounded-xl p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-semibold text-amber-950 dark:text-amber-100">
+                  Still Pending Work Reminders ({activePendingLogs.length})
+                </h3>
+                <p className="text-xs text-amber-800 dark:text-amber-300">
+                  Closed to Pending for their visit day — log a connected continuation visit with fresh Start &amp; Finish times when resuming or completing on another day.
+                </p>
+              </div>
+            </div>
+            {activePendingLogs.length > 4 && (
+              <button
+                type="button"
+                onClick={() => setShowAllReminders((prev) => !prev)}
+                className="text-xs font-medium text-amber-900 dark:text-amber-200 hover:underline whitespace-nowrap"
+              >
+                {showAllReminders
+                  ? 'Show Fewer'
+                  : `Show All ${activePendingLogs.length} Reminders`}
+              </button>
+            )}
+          </div>
+
+          <div className="divide-y divide-amber-200/80 dark:divide-amber-800/70 bg-white/80 dark:bg-slate-900/80 border border-amber-200 dark:border-amber-800/80 rounded-lg overflow-hidden">
+            {(showAllReminders ? activePendingLogs : activePendingLogs.slice(0, 4)).map((w) => {
+              const chain = getWorkLogChain(w, workLogs);
+              const ageDays = Math.max(0, isoDayDiff(w.logDate, today));
+              return (
+                <div
+                  key={w.id}
+                  className="px-4 py-3 flex flex-wrap items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-mono font-semibold text-brand-700 dark:text-brand-400">
+                        {w.buildingCode}
+                      </span>
+                      <span className="font-medium text-slate-900 dark:text-slate-100">
+                        {w.location}
+                      </span>
+                      {w.woNumber && (
+                        <span className="font-mono text-slate-500 dark:text-slate-400">
+                          · WO {w.woNumber}
+                        </span>
+                      )}
+                      <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 font-medium text-[11px]">
+                        {w.status}
+                      </span>
+                      <span className="font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+                        {w.logDate} ({ageDays}d ago) · {chain.sessions.length} session(s) ·{' '}
+                        {chain.totalHours}h logged
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-800 dark:text-slate-200 truncate">
+                      {w.complaint}
+                    </p>
+                    {w.pendingReason && (
+                      <p className="text-[11px] text-amber-800 dark:text-amber-300 truncate">
+                        Pending reason: {w.pendingReason}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {chain.sessions.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setChainModalLog(w)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+                      >
+                        <Link2 className="w-3 h-3" />
+                        Chain ({chain.sessions.length})
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => openContinueModal(w)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-700 hover:bg-brand-800 text-white text-xs font-medium whitespace-nowrap transition-colors"
+                    >
+                      <ArrowRightCircle className="w-3.5 h-3.5" />
+                      Continue / Complete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Filters Bar */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <div className={`grid grid-cols-2 ${isSupervisor ? 'md:grid-cols-6' : 'md:grid-cols-5'} gap-3`}>
           <div>
             <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
               From Date
@@ -442,23 +697,25 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
               ))}
             </select>
           </div>
-          <div>
-            <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-              Technician
-            </label>
-            <select
-              value={techFilter}
-              onChange={(e) => setTechFilter(e.target.value)}
-              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
-            >
-              <option value="all">All Technicians</option>
-              {techNames.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-          </div>
+          {isSupervisor && (
+            <div>
+              <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                Technician
+              </label>
+              <select
+                value={techFilter}
+                onChange={(e) => setTechFilter(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
+              >
+                <option value="all">All Technicians</option>
+                {techNames.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
@@ -486,7 +743,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
             <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400">
               {filteredLogs.length} total ·{' '}
               <span className="text-emerald-700 dark:text-emerald-400">{completedCount} done</span> ·{' '}
-              <span className="text-amber-700 dark:text-amber-400">{openCount} open</span>
+              <span className="text-amber-700 dark:text-amber-400">{openCount} active pending</span>
             </span>
           </div>
         </div>
@@ -520,8 +777,15 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
                 {filteredLogs.map((w) => {
+                  const isOwner =
+                    w.technicianUid === user.uid ||
+                    normalizeEmail(w.technicianEmail) === normalizeEmail(user.email);
                   const canEdit =
-                    isSupervisor || (w.technicianUid === user.uid && w.status !== 'Completed');
+                    isSupervisor || (isOwner && w.status !== 'Completed');
+                  const isActivePending = isActivePendingWorkLog(w, workLogs);
+                  const hasChain = Boolean(
+                    w.parentWorkLogId || w.supersededByLogId || (w.sessionNumber && w.sessionNumber > 1)
+                  );
                   return (
                     <tr key={w.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 align-top">
                       <td className="py-3 px-4 whitespace-nowrap">
@@ -531,6 +795,16 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                         <p className="text-slate-500 dark:text-slate-400">
                           {w.shift} Shift {w.woNumber ? `· WO ${w.woNumber}` : ''}
                         </p>
+                        {hasChain && (
+                          <button
+                            type="button"
+                            onClick={() => setChainModalLog(w)}
+                            className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-50 dark:bg-brand-950/60 border border-brand-200 dark:border-brand-800 text-[10px] font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-900/60"
+                          >
+                            <Link2 className="w-2.5 h-2.5" />
+                            Session #{w.sessionNumber || 1}
+                          </button>
+                        )}
                       </td>
                       <td className="py-3 px-4">
                         <p className="font-medium text-slate-900 dark:text-slate-100">
@@ -592,6 +866,18 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             Completed
                           </span>
+                        ) : w.supersededByLogId || w.chainResolved ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1 font-medium text-slate-600 dark:text-slate-300">
+                              <Link2 className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
+                              {w.status} (Continued)
+                            </span>
+                            {w.chainResolved && (
+                              <p className="text-[10px] text-emerald-700 dark:text-emerald-400">
+                                Completed in follow-up
+                              </p>
+                            )}
+                          </div>
                         ) : (
                           <span className="inline-flex items-center gap-1 font-medium text-amber-700 dark:text-amber-400">
                             <Clock className="w-3.5 h-3.5" />
@@ -601,6 +887,17 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1">
+                          {isActivePending && (
+                            <button
+                              type="button"
+                              onClick={() => openContinueModal(w)}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-brand-50 dark:bg-brand-950/60 border border-brand-200 dark:border-brand-800 text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-900/60 text-[11px] font-medium"
+                              title="Log follow-up / completion visit on a new record"
+                            >
+                              <ArrowRightCircle className="w-3 h-3" />
+                              Continue
+                            </button>
+                          )}
                           {canEdit && (
                             <button
                               type="button"
@@ -718,6 +1015,28 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                 </div>
               </div>
 
+              {isSupervisor && technicians.some((t) => t.role === 'technician' && t.status === 'active') && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Logged For Technician
+                  </label>
+                  <select
+                    value={targetTechId}
+                    onChange={(e) => setTargetTechId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  >
+                    <option value="self">Myself ({user.name})</option>
+                    {technicians
+                      .filter((t) => t.role === 'technician' && t.status === 'active')
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.badgeId})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
+
               <div className="grid sm:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
@@ -833,7 +1152,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Finish Time{' '}
+                    Finish Time{status !== 'Completed' ? ' *' : ''}{' '}
                     {createTimeValidation.hasBothTimes && (
                       <span
                         className={`font-mono ${
@@ -848,6 +1167,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                   </label>
                   <input
                     type="time"
+                    required={status !== 'Completed'}
                     value={finishTime}
                     onChange={(e) => setFinishTime(e.target.value)}
                     className={`w-full px-3 py-2 rounded-lg border bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 ${
@@ -906,6 +1226,9 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                       placeholder="Waiting for spare part / tenant access..."
                       className="w-full px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-600"
                     />
+                    <p className="mt-1 text-[11px] text-amber-800 dark:text-amber-300">
+                      Finish Time is required to close today’s session to Pending. A reminder stays active until completed in a linked follow-up visit.
+                    </p>
                   </div>
                 )}
               </div>
@@ -1088,7 +1411,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Finish Time{' '}
+                        Finish Time{editStatus !== 'Completed' ? ' *' : ''}{' '}
                         {editTimeValidation.hasBothTimes && (
                           <span
                             className={`font-mono ${
@@ -1103,6 +1426,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                       </label>
                       <input
                         type="time"
+                        required={editStatus !== 'Completed'}
                         value={editFinishTime}
                         onChange={(e) => setEditFinishTime(e.target.value)}
                         className={`w-full px-3 py-2 rounded-lg border bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 ${
@@ -1138,6 +1462,26 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
               ) : (
                 <>
                   <p className="text-xs text-slate-600 dark:text-slate-400">{editingLog.complaint}</p>
+                  {editingLog.status !== 'Completed' && editingLog.finishTime && (
+                    <div className="p-3 rounded-lg bg-brand-50 dark:bg-brand-950/50 border border-brand-200 dark:border-brand-800 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-xs text-brand-900 dark:text-brand-200">
+                        This visit on <span className="font-mono font-semibold">{editingLog.logDate}</span> already ended at{' '}
+                        <span className="font-mono font-semibold">{editingLog.finishTime}</span>. If you are finishing or continuing this job on another day, log a connected follow-up visit so productive hours stay accurate.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const target = editingLog;
+                          setEditingLog(null);
+                          openContinueModal(target);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-700 hover:bg-brand-800 text-white text-xs font-medium whitespace-nowrap"
+                      >
+                        <ArrowRightCircle className="w-3.5 h-3.5" />
+                        Log Continuation / Completion Visit
+                      </button>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
@@ -1157,7 +1501,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Finish Time{' '}
+                        Finish Time{editStatus !== 'Completed' ? ' *' : ''}{' '}
                         {editTimeValidation.hasBothTimes && (
                           <span
                             className={`font-mono ${
@@ -1172,6 +1516,7 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
                       </label>
                       <input
                         type="time"
+                        required={editStatus !== 'Completed'}
                         value={editFinishTime}
                         onChange={(e) => setEditFinishTime(e.target.value)}
                         className={`w-full px-3 py-2 rounded-lg border bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 ${
@@ -1261,6 +1606,310 @@ export const WorkLogsView: React.FC<WorkLogsViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Continue / Complete Pending Work (Connected New Visit Record) */}
+      {continuingLog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 overflow-y-auto">
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden my-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Continue / Complete Pending Job — Session #{(continuingLog.sessionNumber || 1) + 1}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {continuingLog.buildingCode} · {continuingLog.location}{' '}
+                  {continuingLog.woNumber ? `· WO ${continuingLog.woNumber}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setContinuingLog(null)}
+                className="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleContinueSubmit} className="p-6 space-y-4 max-h-[82vh] overflow-y-auto">
+              {(() => {
+                const chain = getWorkLogChain(continuingLog, workLogs);
+                return (
+                  <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        Connected Work Chain ({chain.sessions.length} prior visit{chain.sessions.length === 1 ? '' : 's'})
+                      </span>
+                      <span className="font-mono text-brand-700 dark:text-brand-400 tabular-nums">
+                        {chain.totalHours}h logged so far
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-700 dark:text-slate-300">
+                      {continuingLog.complaint}
+                    </p>
+                    <div className="space-y-1 max-h-28 overflow-y-auto pt-1 border-t border-slate-200 dark:border-slate-700">
+                      {chain.sessions.map((s) => (
+                        <div
+                          key={s.id}
+                          className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-400"
+                        >
+                          <span className="font-mono">
+                            Session #{s.sessionNumber || 1} · {s.logDate} ({s.startTime || '--:--'}–{s.finishTime || '--:--'}, {s.durationHours || 0}h)
+                          </span>
+                          <span className="text-amber-700 dark:text-amber-400">
+                            {s.status}{s.pendingReason ? `: ${s.pendingReason}` : ''}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {contError && (
+                <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+                  {contError}
+                </div>
+              )}
+
+              <div className="grid sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Visit Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={contLogDate}
+                    onChange={(e) => setContLogDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Shift *
+                  </label>
+                  <select
+                    value={contShift}
+                    onChange={(e) => setContShift(e.target.value as WorkShift)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  >
+                    <option value="Day">Day</option>
+                    <option value="Night">Night</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Outcome Status *
+                  </label>
+                  <select
+                    value={contStatus}
+                    onChange={(e) => setContStatus(e.target.value as WorkStatus)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  >
+                    {WORK_STATUSES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Start Time *
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={contStartTime}
+                    onChange={(e) => setContStartTime(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Finish Time *{' '}
+                    {contTimeValidation.hasBothTimes && (
+                      <span
+                        className={`font-mono ${
+                          contTimeValidation.valid
+                            ? 'text-brand-700 dark:text-brand-400'
+                            : 'text-red-700 dark:text-red-400 font-semibold'
+                        }`}
+                      >
+                        ({liveContHours}h / {MAX_SINGLE_WORK_HOURS}h max)
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={contFinishTime}
+                    onChange={(e) => setContFinishTime(e.target.value)}
+                    className={`w-full px-3 py-2 rounded-lg border bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 ${
+                      contTimeValidation.valid
+                        ? 'border-slate-300 dark:border-slate-700 focus:ring-brand-600'
+                        : 'border-red-500 dark:border-red-500 focus:ring-red-600'
+                    }`}
+                  />
+                </div>
+              </div>
+              {!contTimeValidation.valid && (
+                <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+                  Total visit time ({liveContHours}h) exceeds the {MAX_SINGLE_WORK_HOURS}-hour limit per work record ({STANDARD_DAILY_DUTY_HOURS}h/day duty policy).
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Action Taken on This Visit *
+                </label>
+                <SpellCheckTextarea
+                  rows={2}
+                  required
+                  maxLength={1500}
+                  value={contAction}
+                  onValueChange={setContAction}
+                  placeholder="Describe follow-up repair, installation, or testing completed..."
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-600"
+                />
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Materials / Spare Parts Used
+                  </label>
+                  <SpellCheckInput
+                    maxLength={500}
+                    value={contMaterials}
+                    onValueChange={setContMaterials}
+                    placeholder="Parts replaced during this visit..."
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  />
+                </div>
+                {contStatus !== 'Completed' && (
+                  <div>
+                    <label className="block text-xs font-medium text-amber-800 dark:text-amber-300 mb-1">
+                      Remaining Pending / On Hold Reason *
+                    </label>
+                    <SpellCheckInput
+                      required
+                      maxLength={500}
+                      value={contPendingReason}
+                      onValueChange={setContPendingReason}
+                      placeholder="Why another follow-up visit is still required..."
+                      className="w-full px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand-600"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setContinuingLog(null)}
+                  className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={contSaving}
+                  className="px-5 py-2 rounded-lg bg-brand-700 text-white text-xs font-medium hover:bg-brand-800 disabled:opacity-60 transition-colors"
+                >
+                  {contSaving
+                    ? 'Saving Visit...'
+                    : contStatus === 'Completed'
+                      ? 'Save & Mark Job Completed'
+                      : 'Save Follow-Up Session'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Connected Job Chain Timeline Modal */}
+      {chainModalLog && (() => {
+        const chain = getWorkLogChain(chainModalLog, workLogs);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 overflow-y-auto">
+            <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden my-auto">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+                <div>
+                  <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                    Connected Work Order Sessions ({chain.sessions.length})
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    {chainModalLog.buildingCode} · {chainModalLog.location} · Combined Productive Time:{' '}
+                    <span className="font-mono font-semibold text-brand-700 dark:text-brand-400">
+                      {chain.totalHours}h
+                    </span>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setChainModalLog(null)}
+                  className="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-6 space-y-3 max-h-[75vh] overflow-y-auto">
+                <p className="text-xs font-medium text-slate-800 dark:text-slate-200">
+                  {chainModalLog.complaint}
+                </p>
+                <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+                  {chain.sessions.map((s) => (
+                    <div key={s.id} className="p-3.5 space-y-1 text-xs bg-white dark:bg-slate-900">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+                          Session #{s.sessionNumber || 1} · {s.logDate} ({s.shift})
+                        </span>
+                        <span
+                          className={`font-medium ${
+                            s.status === 'Completed'
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : 'text-amber-700 dark:text-amber-400'
+                          }`}
+                        >
+                          {s.status} · {s.startTime || s.receivedTime || '--:--'}–{s.finishTime || '--:--'} ({s.durationHours || 0}h)
+                        </span>
+                      </div>
+                      <p className="text-slate-600 dark:text-slate-400">
+                        Technician: {s.technicianName}
+                      </p>
+                      {s.action && (
+                        <p className="text-slate-800 dark:text-slate-200">Action: {s.action}</p>
+                      )}
+                      {s.materials && (
+                        <p className="text-slate-500 dark:text-slate-400">Materials: {s.materials}</p>
+                      )}
+                      {s.pendingReason && s.status !== 'Completed' && (
+                        <p className="text-amber-800 dark:text-amber-300">
+                          Pending reason: {s.pendingReason}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setChainModalLog(null)}
+                    className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

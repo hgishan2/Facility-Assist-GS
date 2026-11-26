@@ -337,6 +337,10 @@ function buildSheetPayloads(snapshot: BackupDatasetSnapshot): {
       'Pending Reason',
       'Technician',
       'Supervisor',
+      'Session #',
+      'Root Job ID',
+      'Superseded By',
+      'Chain Resolved',
       'Remarks',
     ],
     ...snapshot.workLogs.map((w) => [
@@ -360,6 +364,10 @@ function buildSheetPayloads(snapshot: BackupDatasetSnapshot): {
       safeCell(w.pendingReason),
       safeCell(w.technicianName),
       safeCell(w.supervisorName),
+      safeCell(w.sessionNumber || 1),
+      safeCell(w.rootWorkLogId || w.id),
+      safeCell(w.supersededByLogId || ''),
+      w.status === 'Completed' || w.chainResolved ? 'Yes' : 'No',
       safeCell(w.remarks),
     ]),
   ];

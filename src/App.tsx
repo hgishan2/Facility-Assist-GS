@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
@@ -53,7 +53,14 @@ import { WorkLogsView } from './components/WorkLogsView';
 import { useGoogleSheetsAutoBackup } from './hooks/useGoogleSheetsAutoBackup';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { ThemeProvider } from './hooks/useTheme';
-import { flushOfflineQueue, loadMyAccessGrant } from './lib/dataService';
+import {
+  flushOfflineQueue,
+  type Gst1TeamProvisionResult,
+  loadMyAccessGrant,
+  provisionGst1TeamAndRecords,
+  repairStaffRecordOwnership,
+  type StaffOwnershipRepairResult,
+} from './lib/dataService';
 import {
   auth,
   clearGoogleSheetsAccessToken,
@@ -64,6 +71,7 @@ import {
   testConnection,
 } from './lib/firebase';
 import { getOfflineOpsQueue, getOfflineQueue } from './lib/offlineQueue';
+import { getActivePendingWorkLogs } from './lib/operationsAnalytics';
 import { buildActivePpmSchedules } from './lib/ppmSchedule';
 import type { ParsedAssetQr } from './lib/qrUtils';
 import {
@@ -71,12 +79,15 @@ import {
   Asset,
   Building,
   EntryType,
+  GST1_SUPERVISOR_PRESET,
+  GST1_TECHNICIANS_PRESET,
   MaintenanceLog,
   MaintenanceNotification,
   normalizeEmail,
   OfflineOpItem,
   OfflineQueueItem,
   OvertimeLog,
+  supervisorToAuthEmail,
   Technician,
   TenantSchedule,
   UserRole,
@@ -138,6 +149,7 @@ function WorkspaceApp() {
   const [tenantSchedules, setTenantSchedules] = useState<TenantSchedule[]>([]);
   const [notifications, setNotifications] = useState<MaintenanceNotification[]>([]);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [opsDataLoaded, setOpsDataLoaded] = useState(false);
 
   const [selectedBuildingId, setSelectedBuildingId] = useState<string>('all');
   const [supervisorTab, setSupervisorTab] = useState<SupervisorTab>('overview');
@@ -157,7 +169,14 @@ function WorkspaceApp() {
   const [offlineQueue, setOfflineQueue] = useState<OfflineQueueItem[]>([]);
   const [offlineOpsQueue, setOfflineOpsQueue] = useState<OfflineOpItem[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [syncingStaffRecords, setSyncingStaffRecords] = useState(false);
+  const [provisioningGst1, setProvisioningGst1] = useState(false);
+  const [gst1ProvisionResult, setGst1ProvisionResult] = useState<Gst1TeamProvisionResult | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const autoRepairSigRef = useRef<string>('');
+  const repairingRef = useRef<boolean>(false);
+  const provisioningGst1Ref = useRef<boolean>(false);
+  const gst1AutoProvisionedRef = useRef<boolean>(false);
 
   const { browserOnline, manualOffline, isEffectiveOnline, toggleManualOffline } = useOnlineStatus();
 
@@ -231,12 +250,35 @@ function WorkspaceApp() {
       setTenantSchedules([]);
       setNotifications([]);
       setDataLoaded(false);
+      setOpsDataLoaded(false);
       return;
     }
 
     const cleanEmail = normalizeEmail(authUser.email);
     const isAdminUser = accessProfile.role === 'admin' || cleanEmail === ADMIN_AUTH_EMAIL;
     const isSupOrAdmin = accessProfile.role === 'supervisor' || isAdminUser;
+    const readyFlags = {
+      buildings: false,
+      techs: !isSupOrAdmin,
+      workLogs: false,
+      overtime: false,
+      readings: false,
+      schedules: false,
+    };
+    const markReady = (key: keyof typeof readyFlags) => {
+      if (readyFlags[key]) return;
+      readyFlags[key] = true;
+      if (
+        readyFlags.buildings &&
+        readyFlags.techs &&
+        readyFlags.workLogs &&
+        readyFlags.overtime &&
+        readyFlags.readings &&
+        readyFlags.schedules
+      ) {
+        setOpsDataLoaded(true);
+      }
+    };
 
     const scopeQuery = (collName: string) =>
       isAdminUser
@@ -244,6 +286,13 @@ function WorkspaceApp() {
         : isSupOrAdmin
           ? query(collection(db, collName), where('supervisorEmails', 'array-contains', cleanEmail))
           : query(collection(db, collName), where('buildingMemberEmails', 'array-contains', cleanEmail));
+
+    const ownRecordQuery = (collName: string, techEmailField: string) =>
+      isAdminUser
+        ? collection(db, collName)
+        : isSupOrAdmin
+          ? query(collection(db, collName), where('supervisorEmails', 'array-contains', cleanEmail))
+          : query(collection(db, collName), where(techEmailField, '==', cleanEmail));
 
     const buildingsQ = isAdminUser
       ? collection(db, 'buildings')
@@ -259,6 +308,7 @@ function WorkspaceApp() {
           .sort((a, b) => a.code.localeCompare(b.code));
         setBuildings(list);
         setDataLoaded(true);
+        markReady('buildings');
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'buildings')
     );
@@ -287,13 +337,14 @@ function WorkspaceApp() {
             .map((d) => d.data() as Technician)
             .sort((a, b) => a.name.localeCompare(b.name));
           setTechnicians(list);
+          markReady('techs');
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'technicians')
       );
     }
 
     const unsubLogs = onSnapshot(
-      scopeQuery('maintenance_logs'),
+      ownRecordQuery('maintenance_logs', 'submittedByEmail'),
       (snap) => {
         const list = snap.docs
           .map((d) => d.data() as MaintenanceLog)
@@ -304,30 +355,25 @@ function WorkspaceApp() {
     );
 
     const unsubWorkLogs = onSnapshot(
-      scopeQuery('work_logs'),
+      ownRecordQuery('work_logs', 'technicianEmail'),
       (snap) => {
         const list = snap.docs
           .map((d) => d.data() as WorkLog)
           .sort((a, b) => (b.logDate || '').localeCompare(a.logDate || ''));
         setWorkLogs(list);
+        markReady('workLogs');
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'work_logs')
     );
 
-    // Overtime logs contain employee OT hours: technicians may only list their own UID per Firestore rules
-    const otQuery = isAdminUser
-      ? collection(db, 'overtime_logs')
-      : isSupOrAdmin
-        ? query(collection(db, 'overtime_logs'), where('supervisorEmails', 'array-contains', cleanEmail))
-        : query(collection(db, 'overtime_logs'), where('technicianUid', '==', authUser.uid));
-
     const unsubOvertime = onSnapshot(
-      otQuery,
+      ownRecordQuery('overtime_logs', 'technicianEmail'),
       (snap) => {
         const list = snap.docs
           .map((d) => d.data() as OvertimeLog)
           .sort((a, b) => (b.otDate || '').localeCompare(a.otDate || ''));
         setOvertimeLogs(list);
+        markReady('overtime');
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'overtime_logs')
     );
@@ -344,23 +390,25 @@ function WorkspaceApp() {
     );
 
     const unsubReadings = onSnapshot(
-      scopeQuery('utility_readings'),
+      ownRecordQuery('utility_readings', 'technicianEmail'),
       (snap) => {
         const list = snap.docs
           .map((d) => d.data() as UtilityReading)
           .sort((a, b) => (b.readingDate || '').localeCompare(a.readingDate || ''));
         setUtilityReadings(list);
+        markReady('readings');
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'utility_readings')
     );
 
     const unsubSchedules = onSnapshot(
-      scopeQuery('tenant_schedules'),
+      ownRecordQuery('tenant_schedules', 'assignedTechEmail'),
       (snap) => {
         const list = snap.docs
           .map((d) => d.data() as TenantSchedule)
           .sort((a, b) => (a.scheduleDate || '').localeCompare(b.scheduleDate || ''));
         setTenantSchedules(list);
+        markReady('schedules');
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'tenant_schedules')
     );
@@ -412,6 +460,207 @@ function WorkspaceApp() {
       handleSyncOfflineQueue();
     }
   }, [isEffectiveOnline, authUser, accessProfile, totalOfflineQueued, handleSyncOfflineQueue]);
+
+  const handleRepairStaffRecords = useCallback(
+    async (silentIfZero = false): Promise<StaffOwnershipRepairResult | null> => {
+      if (!authUser?.email || !accessProfile || accessProfile.status !== 'active') return null;
+      if (accessProfile.role !== 'admin' && accessProfile.role !== 'supervisor') return null;
+      if (!isEffectiveOnline || repairingRef.current || technicians.length === 0) return null;
+
+      repairingRef.current = true;
+      setSyncingStaffRecords(true);
+      try {
+        const res = await repairStaffRecordOwnership({
+          buildings,
+          technicians,
+          workLogs,
+          overtimeLogs,
+          utilityReadings,
+          tenantSchedules,
+          caller: { email: authUser.email, role: accessProfile.role },
+        });
+        if (res.totalUpdated > 0) {
+          showToast(
+            `Linked ${res.totalUpdated.toLocaleString()} record(s) to matching staff accounts.`
+          );
+        } else if (!silentIfZero) {
+          showToast('All existing records are already linked to matching staff accounts.');
+        }
+        return res;
+      } finally {
+        repairingRef.current = false;
+        setSyncingStaffRecords(false);
+      }
+    },
+    [
+      authUser?.email,
+      accessProfile,
+      isEffectiveOnline,
+      buildings,
+      technicians,
+      workLogs,
+      overtimeLogs,
+      utilityReadings,
+      tenantSchedules,
+      showToast,
+    ]
+  );
+
+  useEffect(() => {
+    if (
+      !opsDataLoaded ||
+      !isEffectiveOnline ||
+      !authUser?.email ||
+      !accessProfile ||
+      accessProfile.status !== 'active' ||
+      (accessProfile.role !== 'admin' && accessProfile.role !== 'supervisor') ||
+      technicians.length === 0
+    ) {
+      return;
+    }
+    const sig = `${normalizeEmail(authUser.email)}|${buildings.length}|${technicians.length}|${workLogs.length}|${overtimeLogs.length}|${utilityReadings.length}|${tenantSchedules.length}`;
+    if (autoRepairSigRef.current === sig) return;
+    autoRepairSigRef.current = sig;
+    void handleRepairStaffRecords(true);
+  }, [
+    opsDataLoaded,
+    isEffectiveOnline,
+    authUser?.email,
+    accessProfile,
+    buildings.length,
+    technicians.length,
+    workLogs.length,
+    overtimeLogs.length,
+    utilityReadings.length,
+    tenantSchedules.length,
+    handleRepairStaffRecords,
+  ]);
+
+  const handleProvisionGst1Team = useCallback(
+    async (silent = false): Promise<Gst1TeamProvisionResult | null> => {
+      if (!authUser?.email || !accessProfile || accessProfile.status !== 'active') return null;
+      if (accessProfile.role !== 'admin' && accessProfile.role !== 'supervisor') return null;
+      if (!isEffectiveOnline || provisioningGst1Ref.current) return null;
+
+      provisioningGst1Ref.current = true;
+      setProvisioningGst1(true);
+      try {
+        const res = await provisionGst1TeamAndRecords({
+          uid: authUser.uid,
+          email: authUser.email,
+          role: accessProfile.role,
+          buildings,
+          technicians,
+          workLogs,
+          overtimeLogs,
+          utilityReadings,
+          tenantSchedules,
+        });
+        setGst1ProvisionResult(res);
+
+        if (res.providerDisabled) {
+          showToast(
+            'GST1 profiles & records sorted. Enable Email/Password sign-in in Firebase Auth if logins did not activate.'
+          );
+        } else if (!silent || res.createdCount > 0 || res.repairSummary.totalUpdated > 0 || res.dedupedProfilesCount > 0) {
+          const parts: string[] = [];
+          if (res.createdCount > 0) parts.push(`${res.createdCount} login(s) activated`);
+          if (res.dedupedProfilesCount > 0) parts.push(`${res.dedupedProfilesCount} duplicate profile(s) merged`);
+          if (res.repairSummary.totalUpdated > 0) {
+            parts.push(`${res.repairSummary.totalUpdated.toLocaleString()} record(s) sorted`);
+          }
+          showToast(
+            parts.length > 0
+              ? `GST1 setup complete: ${parts.join(', ')}.`
+              : 'GST1 Supervisor, 9 Technician accounts & all records are already synced.'
+          );
+        }
+        return res;
+      } catch (err) {
+        if (!silent) {
+          showToast(
+            err instanceof Error ? err.message : 'Unable to finish GST1 team setup. Please try again.'
+          );
+        }
+        return null;
+      } finally {
+        provisioningGst1Ref.current = false;
+        setProvisioningGst1(false);
+      }
+    },
+    [
+      authUser?.uid,
+      authUser?.email,
+      accessProfile,
+      isEffectiveOnline,
+      buildings,
+      technicians,
+      workLogs,
+      overtimeLogs,
+      utilityReadings,
+      tenantSchedules,
+      showToast,
+    ]
+  );
+
+  useEffect(() => {
+    if (
+      gst1AutoProvisionedRef.current ||
+      !opsDataLoaded ||
+      !isEffectiveOnline ||
+      !authUser?.email ||
+      !accessProfile ||
+      accessProfile.status !== 'active'
+    ) {
+      return;
+    }
+
+    const cleanCaller = normalizeEmail(authUser.email);
+    const isAdminCaller = accessProfile.role === 'admin' || cleanCaller === ADMIN_AUTH_EMAIL;
+    const isGst1SupCaller =
+      accessProfile.role === 'supervisor' &&
+      cleanCaller === supervisorToAuthEmail(GST1_SUPERVISOR_PRESET.username);
+
+    if (!isAdminCaller && !isGst1SupCaller) return;
+
+    const supEmail = supervisorToAuthEmail(GST1_SUPERVISOR_PRESET.username);
+    const supRecord = technicians.find(
+      (t) =>
+        t.role === 'supervisor' &&
+        (normalizeEmail(t.authEmail || t.email) === supEmail ||
+          (t.username || '').trim() === GST1_SUPERVISOR_PRESET.username)
+    );
+    const gst1Bld = buildings.find((b) => b.code.trim().toUpperCase() === 'GST1');
+
+    const missingOrUnlinkedTech = GST1_TECHNICIANS_PRESET.some((preset) => {
+      const match = technicians.find(
+        (t) => t.role === 'technician' && t.badgeId.trim().toUpperCase() === preset.badgeId
+      );
+      return !match || !match.authUid || (gst1Bld ? !match.assignedBuildingIds.includes(gst1Bld.id) : false);
+    });
+
+    const needsSupOrBldSetup =
+      isAdminCaller &&
+      (!supRecord ||
+        !supRecord.authUid ||
+        !gst1Bld ||
+        !(gst1Bld.supervisorEmails || []).map(normalizeEmail).includes(supEmail));
+
+    if (needsSupOrBldSetup || missingOrUnlinkedTech) {
+      gst1AutoProvisionedRef.current = true;
+      void handleProvisionGst1Team(true);
+    } else {
+      gst1AutoProvisionedRef.current = true;
+    }
+  }, [
+    opsDataLoaded,
+    isEffectiveOnline,
+    authUser?.email,
+    accessProfile,
+    buildings,
+    technicians,
+    handleProvisionGst1Team,
+  ]);
 
   const googleBackupSnapshot = useMemo(
     () => ({
@@ -506,8 +755,47 @@ function WorkspaceApp() {
 
   const mySubmittedLogs = useMemo(() => {
     if (!authUser) return [];
-    return scopedLogs.filter((l) => l.submittedByUid === authUser.uid);
+    const cleanEmail = normalizeEmail(authUser.email || '');
+    return scopedLogs.filter(
+      (l) => l.submittedByUid === authUser.uid || normalizeEmail(l.submittedByEmail) === cleanEmail
+    );
   }, [scopedLogs, authUser]);
+
+  const myPersonalWorkLogs = useMemo(() => {
+    if (!authUser) return [];
+    if (accessProfile?.role === 'technician') return scopedWorkLogs;
+    const cleanEmail = normalizeEmail(authUser.email || '');
+    return scopedWorkLogs.filter(
+      (w) => w.technicianUid === authUser.uid || normalizeEmail(w.technicianEmail) === cleanEmail
+    );
+  }, [scopedWorkLogs, authUser, accessProfile?.role]);
+
+  const myPersonalOvertimeLogs = useMemo(() => {
+    if (!authUser) return [];
+    if (accessProfile?.role === 'technician') return scopedOvertimeLogs;
+    const cleanEmail = normalizeEmail(authUser.email || '');
+    return scopedOvertimeLogs.filter(
+      (o) => o.technicianUid === authUser.uid || normalizeEmail(o.technicianEmail) === cleanEmail
+    );
+  }, [scopedOvertimeLogs, authUser, accessProfile?.role]);
+
+  const myPersonalReadings = useMemo(() => {
+    if (!authUser) return [];
+    if (accessProfile?.role === 'technician') return scopedReadings;
+    const cleanEmail = normalizeEmail(authUser.email || '');
+    return scopedReadings.filter(
+      (r) => r.technicianUid === authUser.uid || normalizeEmail(r.technicianEmail) === cleanEmail
+    );
+  }, [scopedReadings, authUser, accessProfile?.role]);
+
+  const myPersonalSchedules = useMemo(() => {
+    if (!authUser) return [];
+    if (accessProfile?.role === 'technician') return scopedSchedules;
+    const cleanEmail = normalizeEmail(authUser.email || '');
+    return scopedSchedules.filter(
+      (s) => normalizeEmail(s.assignedTechEmail || '') === cleanEmail
+    );
+  }, [scopedSchedules, authUser, accessProfile?.role]);
 
   const pendingApprovalsCount = useMemo(
     () => scopedLogs.filter((l) => l.approvalStatus === 'pending_approval').length,
@@ -515,7 +803,7 @@ function WorkspaceApp() {
   );
 
   const openWorkLogsCount = useMemo(
-    () => scopedWorkLogs.filter((w) => w.status !== 'Completed').length,
+    () => getActivePendingWorkLogs(scopedWorkLogs).length,
     [scopedWorkLogs]
   );
 
@@ -643,7 +931,7 @@ function WorkspaceApp() {
     { id: 'utility_meters', label: 'Utility Meters', icon: <Gauge className="w-4 h-4" /> },
     { id: 'tenant_schedules', label: 'Tenant Schedules', icon: <CalendarCheck2 className="w-4 h-4" /> },
     { id: 'schedules', label: 'PPM Schedule', icon: <CalendarClock className="w-4 h-4" /> },
-    { id: 'building_logs', label: 'Building Register', icon: <ListChecks className="w-4 h-4" /> },
+    { id: 'building_logs', label: 'My Maintenance Logs', icon: <ListChecks className="w-4 h-4" /> },
   ];
 
   const currentTabTitle = isSupervisor
@@ -991,7 +1279,6 @@ function WorkspaceApp() {
                   onNavigate={setSupervisorTab}
                   onCreateNew={openNewLogModal}
                   onBroadcastAlert={() => setBroadcastModalOpen(true)}
-                  onOpenQrScanner={() => setQrScannerOpen(true)}
                   onToast={showToast}
                 />
               )}
@@ -1070,6 +1357,7 @@ function WorkspaceApp() {
                   buildings={scopedBuildings}
                   utilityMeters={scopedMeters}
                   utilityReadings={scopedReadings}
+                  technicians={technicians}
                   user={{
                     uid: authUser.uid,
                     name: accessProfile.name,
@@ -1122,7 +1410,6 @@ function WorkspaceApp() {
                   initialApprovalFilter="pending_approval"
                   onSelectLog={setSelectedLog}
                   onCreateNew={openNewLogModal}
-                  onOpenQrScanner={() => setQrScannerOpen(true)}
                 />
               )}
 
@@ -1136,7 +1423,6 @@ function WorkspaceApp() {
                   scannedAssetFilter={scannedAssetFilter}
                   onSelectLog={setSelectedLog}
                   onCreateNew={openNewLogModal}
-                  onOpenQrScanner={() => setQrScannerOpen(true)}
                   onClearAssetFilter={() => setScannedAssetFilter(null)}
                 />
               )}
@@ -1145,7 +1431,7 @@ function WorkspaceApp() {
                 <AssetsQrView
                   assets={scopedAssets}
                   buildings={buildings}
-                  logs={logs}
+                  logs={scopedLogs}
                   user={{ uid: authUser.uid }}
                   onInspectAssetLogs={(asset) => {
                     setScannedAssetFilter({
@@ -1176,6 +1462,11 @@ function WorkspaceApp() {
                   buildings={buildings}
                   user={{ uid: authUser.uid, email: authUser.email || '' }}
                   role={accessProfile.role}
+                  syncingRecords={syncingStaffRecords}
+                  onSyncStaffRecords={() => handleRepairStaffRecords(false)}
+                  provisioningGst1={provisioningGst1}
+                  gst1Result={gst1ProvisionResult}
+                  onProvisionGst1Team={() => handleProvisionGst1Team(false)}
                 />
               )}
 
@@ -1184,6 +1475,8 @@ function WorkspaceApp() {
                   technicians={technicians}
                   buildings={buildings}
                   user={{ uid: authUser.uid, email: authUser.email || '' }}
+                  provisioningGst1={provisioningGst1}
+                  onProvisionGst1Team={() => handleProvisionGst1Team(false)}
                 />
               )}
 
@@ -1205,6 +1498,8 @@ function WorkspaceApp() {
                     role: accessProfile.role,
                   }}
                   googleBackup={googleBackup}
+                  syncingRecords={syncingStaffRecords}
+                  onSyncStaffRecords={() => handleRepairStaffRecords(false)}
                   onImportComplete={(res) => {
                     const totalImported =
                       res.createdBuildings +
@@ -1226,10 +1521,14 @@ function WorkspaceApp() {
                 <TechnicianPortalView
                   buildings={buildings}
                   myLogs={mySubmittedLogs}
+                  workLogs={myPersonalWorkLogs}
+                  overtimeLogs={myPersonalOvertimeLogs}
+                  utilityReadings={myPersonalReadings}
+                  tenantSchedules={myPersonalSchedules}
                   notifications={scopedNotifications}
                   offlineQueue={offlineQueue}
                   offlineOpsCount={offlineOpsQueue.length}
-                  openWorkLogsCount={openWorkLogsCount}
+                  openWorkLogsCount={getActivePendingWorkLogs(myPersonalWorkLogs).length}
                   todaySchedulesCount={todaySchedulesCount}
                   isEffectiveOnline={isEffectiveOnline}
                   syncing={syncing}
@@ -1244,7 +1543,6 @@ function WorkspaceApp() {
                   onSyncNow={handleSyncOfflineQueue}
                   onOpenModule={(t) => setSupervisorTab(t)}
                   onOpenNotifications={() => setSupervisorTab('notifications')}
-                  onOpenQrScanner={() => setQrScannerOpen(true)}
                   onToast={showToast}
                 />
               )}
@@ -1255,6 +1553,10 @@ function WorkspaceApp() {
                 <TechnicianPortalView
                   buildings={buildings}
                   myLogs={mySubmittedLogs}
+                  workLogs={myPersonalWorkLogs}
+                  overtimeLogs={myPersonalOvertimeLogs}
+                  utilityReadings={myPersonalReadings}
+                  tenantSchedules={myPersonalSchedules}
                   notifications={scopedNotifications}
                   offlineQueue={offlineQueue}
                   offlineOpsCount={offlineOpsQueue.length}
@@ -1273,7 +1575,6 @@ function WorkspaceApp() {
                   onSyncNow={handleSyncOfflineQueue}
                   onOpenModule={(t) => setTechTab(t)}
                   onOpenNotifications={() => setTechTab('notifications')}
-                  onOpenQrScanner={() => setQrScannerOpen(true)}
                   onToast={showToast}
                 />
               )}
@@ -1384,13 +1685,13 @@ function WorkspaceApp() {
               {techTab === 'building_logs' && (
                 <MaintenanceLogsView
                   key="tech-building-logs"
-                  logs={scopedLogs}
+                  logs={mySubmittedLogs}
                   assets={scopedAssets}
                   offlineQueue={offlineQueue}
+                  userRole={accessProfile.role}
                   scannedAssetFilter={scannedAssetFilter}
                   onSelectLog={setSelectedLog}
                   onCreateNew={openNewLogModal}
-                  onOpenQrScanner={() => setQrScannerOpen(true)}
                   onClearAssetFilter={() => setScannedAssetFilter(null)}
                 />
               )}
@@ -1477,8 +1778,8 @@ function WorkspaceApp() {
 
       {qrScannerOpen && (
         <QrScannerModal
-          assets={assets}
-          logs={logs}
+          assets={scopedAssets}
+          logs={isSupervisor ? scopedLogs : mySubmittedLogs}
           onAssetScanned={(parsed) => {
             setScannedAssetFilter(parsed);
             setQrScannerOpen(false);

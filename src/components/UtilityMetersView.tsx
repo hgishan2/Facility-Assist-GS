@@ -30,6 +30,7 @@ import {
   Building,
   DEFAULT_METER_UNITS,
   METER_TYPES,
+  Technician,
   UserRole,
   UtilityMeter,
   UtilityMeterType,
@@ -40,6 +41,7 @@ interface UtilityMetersViewProps {
   buildings: Building[];
   utilityMeters: UtilityMeter[];
   utilityReadings: UtilityReading[];
+  technicians?: Technician[];
   user: { uid: string; name: string; email: string; role: UserRole };
   isEffectiveOnline: boolean;
   onToast: (msg: string) => void;
@@ -51,16 +53,16 @@ export const UtilityMetersView: React.FC<UtilityMetersViewProps> = ({
   buildings,
   utilityMeters,
   utilityReadings,
+  technicians = [],
   user,
   isEffectiveOnline,
   onToast,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
 
   const [subTab, setSubTab] = useState<UtilitySubTab>('readings');
-  const [dateFrom, setDateFrom] = useState(thirtyDaysAgo);
-  const [dateTo, setDateTo] = useState(today);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | UtilityMeterType>('all');
   const [search, setSearch] = useState('');
   const [spikeMultiplier, setSpikeMultiplier] = useState(2.5);
@@ -73,6 +75,7 @@ export const UtilityMetersView: React.FC<UtilityMetersViewProps> = ({
   const [readingDate, setReadingDate] = useState(today);
   const [readingValue, setReadingValue] = useState('');
   const [readingNotes, setReadingNotes] = useState('');
+  const [readingTechId, setReadingTechId] = useState('self');
   const [savingReading, setSavingReading] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
 
@@ -231,6 +234,7 @@ export const UtilityMetersView: React.FC<UtilityMetersViewProps> = ({
       setReadingDate(today);
       setReadingValue('');
       setReadingNotes('');
+      setReadingTechId('self');
     }
     setReadingError(null);
     setEntryModalOpen(true);
@@ -286,6 +290,10 @@ export const UtilityMetersView: React.FC<UtilityMetersViewProps> = ({
         setEditingReading(null);
         onToast('Utility meter reading updated.');
       } else {
+        const selectedTech =
+          isSupervisor && readingTechId !== 'self'
+            ? technicians.find((t) => t.id === readingTechId) || null
+            : null;
         const res = await submitUtilityReading(
           {
             building: b,
@@ -293,6 +301,7 @@ export const UtilityMetersView: React.FC<UtilityMetersViewProps> = ({
             readingDate,
             readingValue: numVal,
             notes: readingNotes,
+            forTechnician: selectedTech,
           },
           {
             uid: user.uid,
@@ -1033,6 +1042,30 @@ export const UtilityMetersView: React.FC<UtilityMetersViewProps> = ({
                   />
                 </div>
               </div>
+
+              {!editingReading &&
+                isSupervisor &&
+                technicians.some((t) => t.role === 'technician' && t.status === 'active') && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                      Logged By Technician
+                    </label>
+                    <select
+                      value={readingTechId}
+                      onChange={(e) => setReadingTechId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                    >
+                      <option value="self">Myself ({user.name})</option>
+                      {technicians
+                        .filter((t) => t.role === 'technician' && t.status === 'active')
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} ({t.badgeId})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">

@@ -24,6 +24,8 @@ import {
 } from '../lib/operationsAnalytics';
 import {
   Building,
+  matchTechnicianByName,
+  normalizeEmail,
   OT_CATEGORY_LABELS,
   OvertimeCategoryType,
   OvertimeLog,
@@ -52,10 +54,9 @@ export const OvertimeView: React.FC<OvertimeViewProps> = ({
   onToast,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
-  const monthStart = `${today.slice(0, 8)}01`;
 
-  const [dateFrom, setDateFrom] = useState(monthStart);
-  const [dateTo, setDateTo] = useState(today);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [techFilter, setTechFilter] = useState('all');
   const [catFilter, setCatFilter] = useState<'all' | OvertimeCategoryType>('all');
 
@@ -69,6 +70,7 @@ export const OvertimeView: React.FC<OvertimeViewProps> = ({
   const [workType, setWorkType] = useState('');
   const [location, setLocation] = useState('');
   const [workDescription, setWorkDescription] = useState('');
+  const [targetTechId, setTargetTechId] = useState('self');
   const [approvalStatus, setApprovalStatus] = useState<'pending_approval' | 'approved' | 'rejected'>('approved');
   const [reviewNotes, setReviewNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -87,6 +89,7 @@ export const OvertimeView: React.FC<OvertimeViewProps> = ({
     setWorkType('');
     setLocation('');
     setWorkDescription('');
+    setTargetTechId('self');
     setApprovalStatus('approved');
     setReviewNotes('');
     setErrorMsg(null);
@@ -109,16 +112,33 @@ export const OvertimeView: React.FC<OvertimeViewProps> = ({
     setModalOpen(true);
   };
 
+  const techRoster = useMemo(
+    () => technicians.filter((t) => t.role === 'technician'),
+    [technicians]
+  );
+
+  const canonicalTechLabel = (rawName: string, rawEmail?: string): string => {
+    const byEmail =
+      rawEmail && techRoster.find((t) => normalizeEmail(t.authEmail || t.email) === normalizeEmail(rawEmail));
+    if (byEmail) return byEmail.name;
+    return matchTechnicianByName(rawName, techRoster)?.name || rawName;
+  };
+
   const scopedLogs = useMemo(() => {
     const deduped = dedupeOvertimeLogs(overtimeLogs);
     return deduped.filter((ot) => {
       if (dateFrom && ot.otDate < dateFrom) return false;
       if (dateTo && ot.otDate > dateTo) return false;
-      if (techFilter !== 'all' && ot.technicianName !== techFilter) return false;
+      if (
+        techFilter !== 'all' &&
+        canonicalTechLabel(ot.technicianName, ot.technicianEmail) !== techFilter
+      ) {
+        return false;
+      }
       if (catFilter !== 'all' && ot.otCategoryType !== catFilter) return false;
       return true;
     });
-  }, [overtimeLogs, dateFrom, dateTo, techFilter, catFilter]);
+  }, [overtimeLogs, dateFrom, dateTo, techFilter, catFilter, techRoster]);
 
   const categoryTotals = useMemo(() => {
     const sums: Record<OvertimeCategoryType, number> = {
@@ -135,25 +155,38 @@ export const OvertimeView: React.FC<OvertimeViewProps> = ({
     return { ...sums, grand };
   }, [scopedLogs]);
 
+  const selectedTargetTech = useMemo(
+    () =>
+      isSupervisor && targetTechId !== 'self'
+        ? technicians.find((t) => t.id === targetTechId) || null
+        : null,
+    [isSupervisor, targetTechId, technicians]
+  );
+
   const duplicateSlotWarning = useMemo(() => {
     if (editingOt) return false;
+    const matchEmail = normalizeEmail(
+      selectedTargetTech ? selectedTargetTech.authEmail || selectedTargetTech.email : user.email
+    );
+    const matchUid = selectedTargetTech ? selectedTargetTech.authUid : user.uid;
     return overtimeLogs.some(
       (r) =>
-        r.technicianUid === user.uid &&
+        ((matchUid && r.technicianUid === matchUid) ||
+          normalizeEmail(r.technicianEmail) === matchEmail) &&
         r.otDate === otDate &&
         r.fromTime === fromTime &&
         r.toTime === toTime
     );
-  }, [overtimeLogs, user.uid, otDate, fromTime, toTime, editingOt]);
+  }, [overtimeLogs, selectedTargetTech, user.uid, user.email, otDate, fromTime, toTime, editingOt]);
 
   const computedHours = calculateTimeHours(fromTime, toTime);
 
   const techNames = useMemo(() => {
     const s = new Set<string>();
-    technicians.forEach((t) => s.add(t.name));
-    overtimeLogs.forEach((o) => s.add(o.technicianName));
-    return Array.from(s).sort();
-  }, [technicians, overtimeLogs]);
+    techRoster.forEach((t) => s.add(t.name));
+    overtimeLogs.forEach((o) => s.add(canonicalTechLabel(o.technicianName, o.technicianEmail)));
+    return Array.from(s).filter(Boolean).sort();
+  }, [techRoster, overtimeLogs]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -202,6 +235,7 @@ export const OvertimeView: React.FC<OvertimeViewProps> = ({
           workType,
           location,
           workDescription,
+          forTechnician: selectedTargetTech,
         },
         {
           uid: user.uid,
@@ -568,6 +602,30 @@ export const OvertimeView: React.FC<OvertimeViewProps> = ({
                   />
                 </div>
               </div>
+
+              {!editingOt &&
+                isSupervisor &&
+                technicians.some((t) => t.role === 'technician' && t.status === 'active') && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                      Technician
+                    </label>
+                    <select
+                      value={targetTechId}
+                      onChange={(e) => setTargetTechId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                    >
+                      <option value="self">Myself ({user.name})</option>
+                      {technicians
+                        .filter((t) => t.role === 'technician' && t.status === 'active')
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} ({t.badgeId})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
 
               <div className="grid sm:grid-cols-3 gap-4">
                 <div>

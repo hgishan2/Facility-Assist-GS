@@ -58,6 +58,8 @@ interface ExcelHubViewProps {
   user: { uid: string; name: string; email: string; role?: UserRole };
   googleBackup: UseGoogleSheetsAutoBackupReturn;
   onImportComplete: (summary: BulkImportResult) => void;
+  syncingRecords?: boolean;
+  onSyncStaffRecords?: () => void;
 }
 
 type PendingSheetAction =
@@ -80,6 +82,8 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
   user,
   googleBackup,
   onImportComplete,
+  syncingRecords = false,
+  onSyncStaffRecords,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
@@ -894,15 +898,28 @@ export const ExcelHubView: React.FC<ExcelHubViewProps> = ({
                 Includes Building GST1, 9 team profiles, 7 meters, 982 work logs, 67 overtime entries, 246 readings &amp; 14 tenant schedules. Unrelated PIN columns &amp; empty sheets are automatically excluded.
               </p>
             </div>
-            <button
-              type="button"
-              disabled={parsing || importing}
-              onClick={handleLoadUploadedLegacyGst1}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-brand-700 text-white text-xs font-medium hover:bg-brand-800 disabled:opacity-60 whitespace-nowrap shrink-0 transition-colors"
-            >
-              <Database className="w-3.5 h-3.5" />
-              {parsing ? 'Loading...' : 'Preview & Import GST1 Data'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {onSyncStaffRecords && (
+                <button
+                  type="button"
+                  disabled={syncingRecords || importing}
+                  onClick={onSyncStaffRecords}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60 whitespace-nowrap transition-colors"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncingRecords ? 'animate-spin' : ''}`} />
+                  {syncingRecords ? 'Linking...' : 'Link Records to Staff'}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={parsing || importing}
+                onClick={handleLoadUploadedLegacyGst1}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-brand-700 text-white text-xs font-medium hover:bg-brand-800 disabled:opacity-60 whitespace-nowrap transition-colors"
+              >
+                <Database className="w-3.5 h-3.5" />
+                {parsing ? 'Loading...' : 'Preview & Import GST1 Data'}
+              </button>
+            </div>
           </div>
 
           <div

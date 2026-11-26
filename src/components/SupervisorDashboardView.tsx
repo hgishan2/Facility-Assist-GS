@@ -16,6 +16,7 @@ import {
   QrCode,
   Wrench,
 } from 'lucide-react';
+import { getActivePendingWorkLogs } from '../lib/operationsAnalytics';
 import { buildActivePpmSchedules, formatDueDeltaLabel } from '../lib/ppmSchedule';
 import {
   Building,
@@ -70,7 +71,6 @@ interface SupervisorDashboardViewProps {
   ) => void;
   onCreateNew: (defaultType?: EntryType, prefill?: LogPrefillTemplate) => void;
   onBroadcastAlert: () => void;
-  onOpenQrScanner?: () => void;
   onToast: (msg: string) => void;
 }
 
@@ -92,7 +92,6 @@ export const SupervisorDashboardView: React.FC<SupervisorDashboardViewProps> = (
   onNavigate,
   onCreateNew,
   onBroadcastAlert,
-  onOpenQrScanner,
   onToast,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
@@ -105,7 +104,10 @@ export const SupervisorDashboardView: React.FC<SupervisorDashboardViewProps> = (
     (l) => l.entryType === 'repair' || l.entryType === 'upgradation'
   );
 
-  const openWorkOrders = workLogs.filter((w) => w.status !== 'Completed').length;
+  const openWorkOrders = useMemo(
+    () => getActivePendingWorkLogs(workLogs).length,
+    [workLogs]
+  );
   const pendingOtCount = overtimeLogs.filter((o) => o.approvalStatus === 'pending_approval').length;
   const todayReadingsCount = utilityReadings.filter((r) => r.readingDate === today).length;
   const activeMetersCount = utilityMeters.filter((m) => m.status === 'active').length;
@@ -138,16 +140,6 @@ export const SupervisorDashboardView: React.FC<SupervisorDashboardViewProps> = (
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
-          {onOpenQrScanner && (
-            <button
-              type="button"
-              onClick={onOpenQrScanner}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
-            >
-              <QrCode className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-              Scan Asset QR
-            </button>
-          )}
           <button
             type="button"
             onClick={() => onNavigate('assets_qr')}

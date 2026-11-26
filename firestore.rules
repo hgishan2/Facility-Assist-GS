@@ -324,7 +324,8 @@ service cloud.firestore {
           'materials', 'receivedTime', 'startTime', 'finishTime', 'durationHours',
           'status', 'pendingReason', 'remarks', 'technicianUid', 'technicianName',
           'technicianEmail', 'supervisorName', 'supervisorEmails', 'buildingMemberEmails',
-          'source', 'createdAt', 'updatedAt'
+          'source', 'parentWorkLogId', 'rootWorkLogId', 'sessionNumber',
+          'supersededByLogId', 'chainResolved', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
         && isValidId(data.buildingId)
@@ -346,13 +347,18 @@ service cloud.firestore {
         && data.status in ['Completed', 'Pending', 'On Hold']
         && data.pendingReason is string && data.pendingReason.size() <= 500
         && data.remarks is string && data.remarks.size() <= 1500
-        && data.technicianUid is string && data.technicianUid.size() >= 1 && data.technicianUid.size() <= 128
+        && data.technicianUid is string && data.technicianUid.size() <= 128
         && data.technicianName is string && data.technicianName.size() >= 1 && data.technicianName.size() <= 120
         && data.technicianEmail is string && data.technicianEmail.size() >= 3 && data.technicianEmail.size() <= 160
         && data.supervisorName is string && data.supervisorName.size() <= 120
         && isValidStringList(data.supervisorEmails, 10)
         && isValidStringList(data.buildingMemberEmails, 50)
         && data.source in ['portal', 'offline_sync']
+        && (!('parentWorkLogId' in data) || (data.parentWorkLogId is string && data.parentWorkLogId.size() <= 128 && (data.parentWorkLogId == '' || isValidId(data.parentWorkLogId))))
+        && (!('rootWorkLogId' in data) || (data.rootWorkLogId is string && data.rootWorkLogId.size() <= 128 && (data.rootWorkLogId == '' || isValidId(data.rootWorkLogId))))
+        && (!('sessionNumber' in data) || (data.sessionNumber is int && data.sessionNumber >= 1 && data.sessionNumber <= 100))
+        && (!('supersededByLogId' in data) || (data.supersededByLogId is string && data.supersededByLogId.size() <= 128 && (data.supersededByLogId == '' || isValidId(data.supersededByLogId))))
+        && (!('chainResolved' in data) || data.chainResolved is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -386,7 +392,7 @@ service cloud.firestore {
         && data.workDescription is string && data.workDescription.size() >= 1 && data.workDescription.size() <= 1500
         && data.approvalStatus in ['pending_approval', 'approved', 'rejected']
         && data.reviewNotes is string && data.reviewNotes.size() <= 500
-        && data.technicianUid is string && data.technicianUid.size() >= 1 && data.technicianUid.size() <= 128
+        && data.technicianUid is string && data.technicianUid.size() <= 128
         && data.technicianName is string && data.technicianName.size() >= 1 && data.technicianName.size() <= 120
         && data.technicianBadgeId is string && data.technicianBadgeId.size() <= 32
         && data.technicianEmail is string && data.technicianEmail.size() >= 3 && data.technicianEmail.size() <= 160
@@ -448,7 +454,7 @@ service cloud.firestore {
         && data.readingDate is string && data.readingDate.size() >= 1 && data.readingDate.size() <= 20
         && data.readingValue is number && data.readingValue >= 0 && data.readingValue <= 999999999
         && data.notes is string && data.notes.size() <= 400
-        && data.technicianUid is string && data.technicianUid.size() >= 1 && data.technicianUid.size() <= 128
+        && data.technicianUid is string && data.technicianUid.size() <= 128
         && data.technicianName is string && data.technicianName.size() >= 1 && data.technicianName.size() <= 120
         && data.technicianEmail is string && data.technicianEmail.size() >= 3 && data.technicianEmail.size() <= 160
         && isValidStringList(data.supervisorEmails, 10)
@@ -729,13 +735,13 @@ service cloud.firestore {
       allow get: if isValidId(logId) && (
         isAdmin()
         || (isSupervisor() && callerEmail() in existing().supervisorEmails)
-        || (isAuthIdentity() && (existing().submittedByUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+        || (isAuthIdentity() && (existing().submittedByUid == request.auth.uid || existing().submittedByEmail == callerEmail()))
       );
       allow list: if isRootAdminEmail()
         || (isAuthIdentity() && (
           callerEmail() in resource.data.supervisorEmails
           || resource.data.submittedByUid == request.auth.uid
-          || callerEmail() in resource.data.buildingMemberEmails
+          || resource.data.submittedByEmail == callerEmail()
         ));
       allow create: if isValidId(logId)
         && isAuthIdentity()
@@ -825,13 +831,13 @@ service cloud.firestore {
       allow get: if isValidId(attachmentId) && (
         isAdmin()
         || (isSupervisor() && callerEmail() in existing().supervisorEmails)
-        || (isAuthIdentity() && (existing().uploadedByUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+        || (isAuthIdentity() && (existing().uploadedByUid == request.auth.uid || existing().uploadedByEmail == callerEmail()))
       );
       allow list: if isRootAdminEmail()
         || (isAuthIdentity() && (
           callerEmail() in resource.data.supervisorEmails
           || resource.data.uploadedByUid == request.auth.uid
-          || callerEmail() in resource.data.buildingMemberEmails
+          || resource.data.uploadedByEmail == callerEmail()
         ));
       allow create: if isValidId(attachmentId)
         && isAuthIdentity()
@@ -857,55 +863,63 @@ service cloud.firestore {
       allow get: if isValidId(workLogId) && (
         isAdmin()
         || (isSupervisor() && callerEmail() in existing().supervisorEmails)
-        || (isAuthIdentity() && (existing().technicianUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+        || (isAuthIdentity() && (existing().technicianUid == request.auth.uid || existing().technicianEmail == callerEmail()))
       );
       allow list: if isRootAdminEmail()
         || (isAuthIdentity() && (
           callerEmail() in resource.data.supervisorEmails
           || resource.data.technicianUid == request.auth.uid
-          || callerEmail() in resource.data.buildingMemberEmails
+          || resource.data.technicianEmail == callerEmail()
         ));
       allow create: if isValidId(workLogId)
         && isAuthIdentity()
         && isValidWorkLog(incoming())
         && incoming().id == workLogId
-        && incoming().technicianUid == request.auth.uid
-        && incoming().technicianEmail == callerEmail()
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
         && (
           isAdmin()
           || (isSupervisor() && ownsBuildingDoc(incoming().buildingId))
-          || (isTechnician() && isBuildingMemberDoc(incoming().buildingId))
+          || (
+            isTechnician()
+            && isBuildingMemberDoc(incoming().buildingId)
+            && incoming().technicianUid == request.auth.uid
+            && incoming().technicianEmail == callerEmail()
+          )
         );
       allow update: if isValidId(workLogId)
         && isAuthIdentity()
         && isValidWorkLog(incoming())
         && incoming().id == existing().id
         && incoming().buildingId == existing().buildingId
-        && incoming().technicianUid == existing().technicianUid
-        && incoming().technicianEmail == existing().technicianEmail
         && incoming().createdAt == existing().createdAt
+        && (!('parentWorkLogId' in existing()) || incoming().parentWorkLogId == existing().parentWorkLogId)
+        && (!('rootWorkLogId' in existing()) || incoming().rootWorkLogId == existing().rootWorkLogId)
+        && (!('sessionNumber' in existing()) || incoming().sessionNumber == existing().sessionNumber)
         && incoming().updatedAt == request.time
         && (
           (
-            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails && callerEmail() in incoming().supervisorEmails))
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'logDate', 'shift', 'woNumber', 'location', 'category', 'priority',
               'complaint', 'action', 'materials', 'receivedTime', 'startTime',
               'finishTime', 'durationHours', 'status', 'pendingReason', 'remarks',
-              'supervisorName', 'updatedAt'
+              'technicianUid', 'technicianName', 'technicianEmail',
+              'supervisorName', 'supervisorEmails', 'buildingMemberEmails',
+              'supersededByLogId', 'chainResolved', 'updatedAt'
             ])
           )
           ||
           (
             isTechnician()
-            && existing().technicianUid == request.auth.uid
+            && (existing().technicianUid == request.auth.uid || existing().technicianEmail == callerEmail())
+            && incoming().technicianUid == existing().technicianUid
+            && incoming().technicianEmail == existing().technicianEmail
             && existing().status != 'Completed'
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'action', 'finishTime', 'durationHours', 'materials',
-              'pendingReason', 'remarks', 'updatedAt'
+              'pendingReason', 'remarks', 'supersededByLogId', 'chainResolved', 'updatedAt'
             ])
           )
         );
@@ -919,19 +933,18 @@ service cloud.firestore {
       allow get: if isValidId(overtimeId) && (
         isAdmin()
         || (isSupervisor() && callerEmail() in existing().supervisorEmails)
-        || (isAuthIdentity() && existing().technicianUid == request.auth.uid)
+        || (isAuthIdentity() && (existing().technicianUid == request.auth.uid || existing().technicianEmail == callerEmail()))
       );
       allow list: if isRootAdminEmail()
         || (isAuthIdentity() && (
           callerEmail() in resource.data.supervisorEmails
           || resource.data.technicianUid == request.auth.uid
+          || resource.data.technicianEmail == callerEmail()
         ));
       allow create: if isValidId(overtimeId)
         && isAuthIdentity()
         && isValidOvertimeLog(incoming())
         && incoming().id == overtimeId
-        && incoming().technicianUid == request.auth.uid
-        && incoming().technicianEmail == callerEmail()
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
@@ -944,22 +957,24 @@ service cloud.firestore {
           (
             isTechnician()
             && isBuildingMemberDoc(incoming().buildingId)
+            && incoming().technicianUid == request.auth.uid
+            && incoming().technicianEmail == callerEmail()
             && incoming().approvalStatus == 'pending_approval'
             && incoming().reviewNotes == ''
           )
         );
       allow update: if isValidId(overtimeId)
-        && (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+        && (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails && callerEmail() in incoming().supervisorEmails))
         && isValidOvertimeLog(incoming())
         && incoming().id == existing().id
         && incoming().buildingId == existing().buildingId
-        && incoming().technicianUid == existing().technicianUid
-        && incoming().technicianEmail == existing().technicianEmail
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'otDate', 'fromTime', 'toTime', 'hours', 'otCategoryType', 'workType',
-          'location', 'workDescription', 'approvalStatus', 'reviewNotes', 'updatedAt'
+          'location', 'workDescription', 'approvalStatus', 'reviewNotes',
+          'technicianUid', 'technicianName', 'technicianBadgeId', 'technicianEmail',
+          'supervisorEmails', 'buildingMemberEmails', 'updatedAt'
         ]);
       allow delete: if isValidId(overtimeId) && (
         isAdmin()
@@ -1009,39 +1024,42 @@ service cloud.firestore {
       allow get: if isValidId(readingId) && (
         isAdmin()
         || (isSupervisor() && callerEmail() in existing().supervisorEmails)
-        || (isAuthIdentity() && (existing().technicianUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+        || (isAuthIdentity() && (existing().technicianUid == request.auth.uid || existing().technicianEmail == callerEmail()))
       );
       allow list: if isRootAdminEmail()
         || (isAuthIdentity() && (
           callerEmail() in resource.data.supervisorEmails
           || resource.data.technicianUid == request.auth.uid
-          || callerEmail() in resource.data.buildingMemberEmails
+          || resource.data.technicianEmail == callerEmail()
         ));
       allow create: if isValidId(readingId)
         && isAuthIdentity()
         && isValidUtilityReading(incoming())
         && incoming().id == readingId
-        && incoming().technicianUid == request.auth.uid
-        && incoming().technicianEmail == callerEmail()
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
         && (
           isAdmin()
           || (isSupervisor() && ownsBuildingDoc(incoming().buildingId))
-          || (isTechnician() && isBuildingMemberDoc(incoming().buildingId))
+          || (
+            isTechnician()
+            && isBuildingMemberDoc(incoming().buildingId)
+            && incoming().technicianUid == request.auth.uid
+            && incoming().technicianEmail == callerEmail()
+          )
         );
       allow update: if isValidId(readingId)
-        && (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+        && (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails && callerEmail() in incoming().supervisorEmails))
         && isValidUtilityReading(incoming())
         && incoming().id == existing().id
         && incoming().buildingId == existing().buildingId
-        && incoming().technicianUid == existing().technicianUid
-        && incoming().technicianEmail == existing().technicianEmail
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'readingDate', 'readingValue', 'notes', 'updatedAt'
+          'readingDate', 'readingValue', 'notes',
+          'technicianUid', 'technicianName', 'technicianEmail',
+          'supervisorEmails', 'buildingMemberEmails', 'updatedAt'
         ]);
       allow delete: if isValidId(readingId) && (
         isAdmin()
@@ -1053,13 +1071,13 @@ service cloud.firestore {
       allow get: if isValidId(scheduleId) && (
         isAdmin()
         || (isSupervisor() && callerEmail() in existing().supervisorEmails)
-        || (isAuthIdentity() && (existing().assignedTechEmail == callerEmail() || callerEmail() in existing().buildingMemberEmails))
+        || (isAuthIdentity() && (existing().assignedTechEmail == callerEmail() || existing().assignedTechUid == request.auth.uid))
       );
       allow list: if isRootAdminEmail()
         || (isAuthIdentity() && (
           callerEmail() in resource.data.supervisorEmails
           || resource.data.assignedTechEmail == callerEmail()
-          || callerEmail() in resource.data.buildingMemberEmails
+          || resource.data.assignedTechUid == request.auth.uid
         ));
       allow create: if isValidId(scheduleId)
         && isAuthIdentity()
@@ -1088,11 +1106,12 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           (
-            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails && callerEmail() in incoming().supervisorEmails))
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'scheduleDate', 'timeSlot', 'unitOrLocation', 'tenantName',
               'category', 'description', 'assignedTechUid', 'assignedTechName',
-              'assignedTechEmail', 'status', 'completionNotes', 'updatedAt'
+              'assignedTechEmail', 'status', 'completionNotes',
+              'supervisorEmails', 'buildingMemberEmails', 'updatedAt'
             ])
           )
           ||

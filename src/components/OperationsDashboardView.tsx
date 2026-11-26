@@ -38,6 +38,7 @@ import {
   computeTenantScheduleSummary,
   computeUtilityAlerts,
   dedupeOvertimeLogs,
+  getActivePendingWorkLogs,
   isoDayDiff,
   MAX_SINGLE_WORK_HOURS,
   round2,
@@ -266,7 +267,10 @@ export const OperationsDashboardView: React.FC<OperationsDashboardViewProps> = (
   // Today Live Overview
   const todayReadingsCount = scopedReadings.filter((r) => r.readingDate === today).length;
   const activeMetersCount = scopedMeters.filter((m) => m.status === 'active').length;
-  const allOpenWorkLogs = scopedWorkLogs.filter((w) => w.status !== 'Completed');
+  const allOpenWorkLogs = useMemo(
+    () => getActivePendingWorkLogs(scopedWorkLogs),
+    [scopedWorkLogs]
+  );
   const todaySchedules = scopedSchedules.filter((s) => s.scheduleDate === today);
   const pendingOtCount = scopedOtLogs.filter((o) => o.approvalStatus === 'pending_approval').length;
 

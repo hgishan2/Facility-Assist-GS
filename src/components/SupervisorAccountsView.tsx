@@ -26,6 +26,8 @@ interface SupervisorAccountsViewProps {
   technicians: Technician[];
   buildings: Building[];
   user: { uid: string; email: string };
+  provisioningGst1?: boolean;
+  onProvisionGst1Team?: () => void;
 }
 
 function generatePassword(): string {
@@ -41,6 +43,8 @@ export const SupervisorAccountsView: React.FC<SupervisorAccountsViewProps> = ({
   technicians,
   buildings,
   user,
+  provisioningGst1 = false,
+  onProvisionGst1Team,
 }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingSup, setEditingSup] = useState<Technician | null>(null);
@@ -166,14 +170,27 @@ export const SupervisorAccountsView: React.FC<SupervisorAccountsViewProps> = ({
             Create username &amp; password accounts for facility supervisors. Each supervisor independently adds and manages their own buildings and technician team.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openAddModal}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-700 text-white text-xs font-medium hover:bg-brand-800 transition-colors whitespace-nowrap"
-        >
-          <UserPlus className="w-4 h-4" />
-          Create Supervisor Account
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {onProvisionGst1Team && (
+            <button
+              type="button"
+              onClick={onProvisionGst1Team}
+              disabled={provisioningGst1}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-950/50 text-brand-800 dark:text-brand-200 text-xs font-medium hover:bg-brand-100 dark:hover:bg-brand-900/60 disabled:opacity-60 transition-colors whitespace-nowrap"
+            >
+              <UserCheck className={`w-4 h-4 ${provisioningGst1 ? 'animate-pulse' : ''}`} />
+              {provisioningGst1 ? 'Setting up GST1...' : 'Setup GST1 (713361 & Team)'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={openAddModal}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-700 text-white text-xs font-medium hover:bg-brand-800 transition-colors whitespace-nowrap"
+          >
+            <UserPlus className="w-4 h-4" />
+            Create Supervisor Account
+          </button>
+        </div>
       </div>
 
       {providerNeedsEnable && (

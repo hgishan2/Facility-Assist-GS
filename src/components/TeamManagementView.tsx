@@ -16,12 +16,15 @@ import {
 } from 'lucide-react';
 import {
   deleteTechnician,
+  type Gst1TeamProvisionResult,
   retryProvisionTechnicianLogin,
   saveTechnician,
 } from '../lib/dataService';
 import {
   ADMIN_AUTH_EMAIL,
   Building,
+  GST1_SUPERVISOR_PRESET,
+  GST1_TECHNICIANS_PRESET,
   normalizeEmail,
   Technician,
   TRADE_OPTIONS,
@@ -33,6 +36,11 @@ interface TeamManagementViewProps {
   buildings: Building[];
   user: { uid: string; email: string };
   role?: UserRole;
+  syncingRecords?: boolean;
+  onSyncStaffRecords?: () => void;
+  provisioningGst1?: boolean;
+  gst1Result?: Gst1TeamProvisionResult | null;
+  onProvisionGst1Team?: () => void;
 }
 
 function generatePasscode(): string {
@@ -49,6 +57,11 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
   buildings,
   user,
   role = 'supervisor',
+  syncingRecords = false,
+  onSyncStaffRecords,
+  provisioningGst1 = false,
+  gst1Result = null,
+  onProvisionGst1Team,
 }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTech, setEditingTech] = useState<Technician | null>(null);
@@ -77,6 +90,7 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
   const [activationPasscode, setActivationPasscode] = useState('');
   const [activating, setActivating] = useState(false);
   const [activationError, setActivationError] = useState<string | null>(null);
+  const [copiedGst1All, setCopiedGst1All] = useState(false);
 
   const technicianRows = useMemo(
     () => technicians.filter((t) => t.role === 'technician'),
@@ -131,8 +145,8 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
       setErrorMsg('Full Name and Badge ID are required.');
       return;
     }
-    if (!editingTech && passcode.trim().length < 6) {
-      setErrorMsg('Passcode must be at least 6 characters.');
+    if (!editingTech && passcode.trim().length < 4) {
+      setErrorMsg('Passcode must be at least 4 characters (e.g. Employee Code).');
       return;
     }
 
@@ -191,8 +205,8 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
   const handleConfirmActivation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activatingTech) return;
-    if (activationPasscode.trim().length < 6) {
-      setActivationError('Passcode must be at least 6 characters.');
+    if (activationPasscode.trim().length < 4) {
+      setActivationError('Passcode must be at least 4 characters (e.g. Employee Code).');
       return;
     }
 
@@ -235,6 +249,19 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
     setTimeout(() => setCopiedCreds(false), 2500);
   };
 
+  const handleCopyGst1All = () => {
+    const lines = [
+      `Facility Assist — GST1 Staff Credentials (${window.location.origin})`,
+      `Supervisor: ${GST1_SUPERVISOR_PRESET.name} | Username: ${GST1_SUPERVISOR_PRESET.username} | Password: ${GST1_SUPERVISOR_PRESET.password}`,
+      ...GST1_TECHNICIANS_PRESET.map(
+        (t) => `${t.name} (${t.trade}) | Emp Code / Username: ${t.badgeId} | Password: ${t.badgeId}`
+      ),
+    ];
+    navigator.clipboard?.writeText(lines.join('\n'));
+    setCopiedGst1All(true);
+    setTimeout(() => setCopiedGst1All(false), 2500);
+  };
+
   const handleDelete = async (tech: Technician) => {
     await deleteTechnician(tech, { email: user.email, role, technicians, buildings });
     setConfirmDeleteId(null);
@@ -255,15 +282,90 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
             Provision your field technicians with a Badge ID &amp; Passcode and assign them to your managed buildings.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openAddModal}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-700 text-white text-xs font-medium hover:bg-brand-800 transition-colors whitespace-nowrap"
-        >
-          <UserPlus className="w-4 h-4" />
-          Add Technician
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {onProvisionGst1Team && (
+            <button
+              type="button"
+              onClick={onProvisionGst1Team}
+              disabled={provisioningGst1 || syncingRecords}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-950/50 text-brand-800 dark:text-brand-200 text-xs font-medium hover:bg-brand-100 dark:hover:bg-brand-900/60 disabled:opacity-60 transition-colors whitespace-nowrap"
+            >
+              <UserCheck className={`w-3.5 h-3.5 ${provisioningGst1 ? 'animate-pulse' : ''}`} />
+              {provisioningGst1 ? 'Setting up GST1...' : 'Setup GST1 Team & Sort Records'}
+            </button>
+          )}
+          {onSyncStaffRecords && (
+            <button
+              type="button"
+              onClick={onSyncStaffRecords}
+              disabled={syncingRecords || provisioningGst1}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60 transition-colors whitespace-nowrap"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncingRecords ? 'animate-spin' : ''}`} />
+              {syncingRecords ? 'Syncing Records...' : 'Sync Existing Records'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={openAddModal}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-700 text-white text-xs font-medium hover:bg-brand-800 transition-colors whitespace-nowrap"
+          >
+            <UserPlus className="w-4 h-4" />
+            Add Technician
+          </button>
+        </div>
       </div>
+
+      {gst1Result && (
+        <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs text-emerald-950 dark:text-emerald-100 space-y-0.5">
+              <p className="font-semibold">
+                GST1 Team Accounts Ready · {gst1Result.repairSummary.totalUpdated} existing record(s) linked &amp; normalized
+                {gst1Result.dedupedProfilesCount > 0
+                  ? ` · ${gst1Result.dedupedProfilesCount} duplicate profile(s) merged`
+                  : ''}
+              </p>
+              <p className="text-[11px] text-emerald-800 dark:text-emerald-300">
+                Each technician logs in with their Employee Code as both Badge ID and Passcode. Name variations (e.g. short names vs full names) are merged onto the same canonical account without duplicating records.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleCopyGst1All}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-xs font-medium text-emerald-900 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 whitespace-nowrap"
+            >
+              {copiedGst1All ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              {copiedGst1All ? 'Copied All Logins' : 'Copy All GST1 Logins'}
+            </button>
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 text-[11px]">
+            {gst1Result.accounts.map((acc) => (
+              <div
+                key={`${acc.role}_${acc.loginId}`}
+                className="px-2.5 py-2 rounded-lg bg-white/80 dark:bg-slate-900/80 border border-emerald-200/80 dark:border-emerald-800/80 flex items-center justify-between gap-2"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-slate-900 dark:text-slate-100 truncate">
+                    {acc.role === 'supervisor' ? 'SUP: ' : ''}
+                    {acc.name}
+                  </p>
+                  <p className="font-mono text-slate-600 dark:text-slate-400">
+                    ID: <strong>{acc.loginId}</strong> · Pass: <strong>{acc.password}</strong>
+                  </p>
+                </div>
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 shrink-0">
+                  {acc.authStatus === 'created'
+                    ? 'Created'
+                    : acc.authStatus === 'provider_disabled'
+                      ? 'Enable Auth'
+                      : 'Ready'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {providerNeedsEnable && (
         <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-xs text-amber-950 dark:text-amber-100 space-y-2">
@@ -505,16 +607,16 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
                   <label className={labelClass}>
-                    {editingTech ? 'New Passcode (optional)' : 'Initial Passcode * (min 6 chars)'}
+                    {editingTech ? 'New Passcode (optional)' : 'Initial Passcode * (min 4 chars)'}
                   </label>
                   <div className="flex items-center gap-1.5">
                     <input
                       type="text"
                       required={!editingTech}
-                      minLength={editingTech ? undefined : 6}
+                      minLength={editingTech ? undefined : 4}
                       value={passcode}
                       onChange={(e) => setPasscode(e.target.value)}
-                      placeholder={editingTech ? 'Leave blank to keep existing' : 'FM-849210'}
+                      placeholder={editingTech ? 'Leave blank to keep existing' : 'Emp Code or FM-849210'}
                       className={`${inputClass} font-mono`}
                     />
                     <button
@@ -656,7 +758,7 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
                 </div>
               )}
               <p className="text-xs text-slate-600 dark:text-slate-300">
-                Set an initial passcode (minimum 6 characters) to activate Badge ID sign-in for{' '}
+                Set an initial passcode (minimum 4 characters, e.g. Employee Code) to activate Badge ID sign-in for{' '}
                 <strong className="text-slate-900 dark:text-slate-100">{activatingTech.name}</strong>.
               </p>
               <div>
@@ -665,7 +767,7 @@ export const TeamManagementView: React.FC<TeamManagementViewProps> = ({
                   <input
                     type="text"
                     required
-                    minLength={6}
+                    minLength={4}
                     value={activationPasscode}
                     onChange={(e) => setActivationPasscode(e.target.value)}
                     className={`${inputClass} font-mono`}

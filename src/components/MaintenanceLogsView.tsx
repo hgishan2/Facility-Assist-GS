@@ -26,6 +26,7 @@ import {
   MaintenanceLog,
   OfflineQueueItem,
   OUTCOME_LABELS,
+  UserRole,
 } from '../types';
 import type { LogPrefillTemplate } from './LogFormModal';
 
@@ -33,12 +34,12 @@ interface MaintenanceLogsViewProps {
   logs: MaintenanceLog[];
   assets?: Asset[];
   offlineQueue: OfflineQueueItem[];
+  userRole?: UserRole;
   initialApprovalFilter?: 'all' | ApprovalStatus;
   initialTypeFilter?: 'all' | EntryType;
   scannedAssetFilter?: ParsedAssetQr | null;
   onSelectLog: (log: MaintenanceLog) => void;
   onCreateNew: (defaultType?: EntryType, prefill?: LogPrefillTemplate) => void;
-  onOpenQrScanner?: () => void;
   onClearAssetFilter?: () => void;
 }
 
@@ -46,12 +47,12 @@ export const MaintenanceLogsView: React.FC<MaintenanceLogsViewProps> = ({
   logs,
   assets = [],
   offlineQueue,
+  userRole,
   initialApprovalFilter = 'all',
   initialTypeFilter = 'all',
   scannedAssetFilter = null,
   onSelectLog,
   onCreateNew,
-  onOpenQrScanner,
   onClearAssetFilter,
 }) => {
   const [search, setSearch] = useState('');
@@ -160,23 +161,15 @@ export const MaintenanceLogsView: React.FC<MaintenanceLogsViewProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
-            Maintenance &amp; PPM Register
+            {userRole === 'technician' ? 'My Maintenance & PPM Logs' : 'Maintenance & PPM Register'}
           </h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            In-house PPM, AMC contractor reports, repair works, and building upgradations.
+            {userRole === 'technician'
+              ? 'Your submitted In-House PPM, AMC contractor reports, repair works, and building upgradations.'
+              : 'In-house PPM, AMC contractor reports, repair works, and building upgradations.'}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
-          {onOpenQrScanner && (
-            <button
-              type="button"
-              onClick={onOpenQrScanner}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
-            >
-              <QrCode className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-              Scan Asset QR
-            </button>
-          )}
           <button
             type="button"
             onClick={() => onCreateNew(typeFilter === 'all' ? 'ppm_inhouse' : typeFilter)}

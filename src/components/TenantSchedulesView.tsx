@@ -21,6 +21,8 @@ import { exportTenantSchedulesWorkbook } from '../lib/excelUtils';
 import { SpellCheckInput, SpellCheckTextarea } from './SpellCheckField';
 import {
   Building,
+  matchTechnicianByName,
+  normalizeEmail,
   Technician,
   TenantSchedule,
   TenantScheduleStatus,
@@ -53,11 +55,9 @@ export const TenantSchedulesView: React.FC<TenantSchedulesViewProps> = ({
   onToast,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
-  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-  const nextMonth = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
 
-  const [dateFrom, setDateFrom] = useState(weekAgo);
-  const [dateTo, setDateTo] = useState(nextMonth);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | TenantScheduleStatus>('all');
   const [techFilter, setTechFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -92,6 +92,18 @@ export const TenantSchedulesView: React.FC<TenantSchedulesViewProps> = ({
     [technicians]
   );
 
+  const techRoster = useMemo(
+    () => technicians.filter((t) => t.role === 'technician'),
+    [technicians]
+  );
+
+  const canonicalTechLabel = (rawName: string, rawEmail?: string): string => {
+    const byEmail =
+      rawEmail && techRoster.find((t) => normalizeEmail(t.authEmail || t.email) === normalizeEmail(rawEmail));
+    if (byEmail) return byEmail.name;
+    return matchTechnicianByName(rawName, techRoster)?.name || rawName;
+  };
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return schedules
@@ -99,7 +111,12 @@ export const TenantSchedulesView: React.FC<TenantSchedulesViewProps> = ({
         if (dateFrom && s.scheduleDate < dateFrom) return false;
         if (dateTo && s.scheduleDate > dateTo) return false;
         if (statusFilter !== 'all' && s.status !== statusFilter) return false;
-        if (techFilter !== 'all' && s.assignedTechName !== techFilter) return false;
+        if (
+          techFilter !== 'all' &&
+          canonicalTechLabel(s.assignedTechName, s.assignedTechEmail) !== techFilter
+        ) {
+          return false;
+        }
         if (q) {
           const hay =
             `${s.buildingCode} ${s.unitOrLocation} ${s.tenantName} ${s.category} ${s.assignedTechName} ${s.description}`.toLowerCase();
@@ -108,14 +125,14 @@ export const TenantSchedulesView: React.FC<TenantSchedulesViewProps> = ({
         return true;
       })
       .sort((a, b) => a.scheduleDate.localeCompare(b.scheduleDate) || a.timeSlot.localeCompare(b.timeSlot));
-  }, [schedules, dateFrom, dateTo, statusFilter, techFilter, search]);
+  }, [schedules, dateFrom, dateTo, statusFilter, techFilter, search, techRoster]);
 
   const techNames = useMemo(() => {
     const s = new Set<string>();
-    activeTechs.forEach((t) => s.add(t.name));
-    schedules.forEach((sc) => s.add(sc.assignedTechName));
-    return Array.from(s).sort();
-  }, [activeTechs, schedules]);
+    techRoster.forEach((t) => s.add(t.name));
+    schedules.forEach((sc) => s.add(canonicalTechLabel(sc.assignedTechName, sc.assignedTechEmail)));
+    return Array.from(s).filter(Boolean).sort();
+  }, [techRoster, schedules]);
 
   const todayCount = schedules.filter((s) => s.scheduleDate === today).length;
   const openCount = filtered.filter((s) => s.status === 'Pending' || s.status === 'In Progress').length;
@@ -309,7 +326,7 @@ export const TenantSchedulesView: React.FC<TenantSchedulesViewProps> = ({
       </div>
 
       {/* Filters */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className={`bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 grid grid-cols-2 ${isSupervisor ? 'md:grid-cols-5' : 'md:grid-cols-4'} gap-3`}>
         <div>
           <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
             From Date
@@ -349,23 +366,25 @@ export const TenantSchedulesView: React.FC<TenantSchedulesViewProps> = ({
             ))}
           </select>
         </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-            Technician
-          </label>
-          <select
-            value={techFilter}
-            onChange={(e) => setTechFilter(e.target.value)}
-            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
-          >
-            <option value="all">All Technicians</option>
-            {techNames.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </div>
+        {isSupervisor && (
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+              Technician
+            </label>
+            <select
+              value={techFilter}
+              onChange={(e) => setTechFilter(e.target.value)}
+              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-600"
+            >
+              <option value="all">All Technicians</option>
+              {techNames.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div>
           <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
             Search

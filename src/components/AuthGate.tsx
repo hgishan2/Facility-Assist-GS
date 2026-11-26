@@ -353,19 +353,19 @@ export const AuthGate: React.FC<AuthGateProps> = ({
           {loginTab === 'technician' ? (
             <form onSubmit={handleBadgeSignIn} className="mt-5 space-y-4">
               <p className="text-xs text-slate-600 dark:text-slate-300">
-                Sign in with the Badge ID and Passcode assigned by your building supervisor.
+                Sign in with your Employee Code / Badge ID and Passcode assigned by your building supervisor.
               </p>
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Technician Badge ID
+                  Employee Code / Badge ID
                 </label>
                 <input
                   type="text"
                   required
                   value={badgeId}
                   onChange={(e) => setBadgeId(e.target.value.toUpperCase())}
-                  placeholder="TECH-01"
+                  placeholder="e.g. 12345"
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-brand-600"
                 />
               </div>
@@ -379,7 +379,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                   required
                   value={passcode}
                   onChange={(e) => setPasscode(e.target.value)}
-                  placeholder="Enter your passcode"
+                  placeholder="e.g. 12345"
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-600"
                 />
               </div>
@@ -476,7 +476,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="admin or supervisor username"
+                  placeholder="e.g. 12345"
                   autoCapitalize="none"
                   autoCorrect="off"
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-600"
@@ -492,7 +492,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                   required
                   value={supPassword}
                   onChange={(e) => setSupPassword(e.target.value)}
-                  placeholder="Enter your password"
+                  placeholder="e.g. 12345"
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-600"
                 />
               </div>

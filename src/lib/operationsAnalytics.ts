@@ -2,6 +2,7 @@ import {
   Building,
   EntryType,
   MaintenanceLog,
+  matchTechnicianByName,
   OvertimeCategoryType,
   OvertimeLog,
   Technician,
@@ -394,61 +395,25 @@ export interface TechnicianScorecardRow {
   otByCategory: Record<OvertimeCategoryType, number>;
 }
 
-function normalizeTechWords(name: string): string[] {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length >= 2)
-    .map((w) =>
-      w === 'muhammad' ? 'mohammad' : w === 'hasan' ? 'hassan' : w
-    );
-}
-
 function resolveRosterTechnician(
   name: string,
   email: string | undefined,
   technicians: Technician[]
 ): Technician | undefined {
-  const cleanName = name.trim().toLowerCase();
   const cleanEmail = (email || '').trim().toLowerCase();
+  const roster = technicians.filter((t) => t.role === 'technician');
+  const pool = roster.length > 0 ? roster : technicians;
 
-  // 1. Exact email or exact name match
-  const exact = technicians.find(
-    (t) =>
-      t.name.trim().toLowerCase() === cleanName ||
-      (cleanEmail &&
-        ((t.authEmail || '').toLowerCase() === cleanEmail ||
-          (t.email || '').toLowerCase() === cleanEmail))
-  );
-  if (exact) return exact;
-
-  // 2. Token-based fuzzy match (handles "Madhab" vs "Madhab Charan", "Mehedi" vs "Mehedi Hasan Liyakat Ali", etc.)
-  const words = normalizeTechWords(name);
-  if (words.length === 0) return undefined;
-
-  let best: Technician | undefined;
-  let bestScore = 0;
-
-  for (const t of technicians) {
-    const tWords = normalizeTechWords(t.name);
-    if (tWords.length === 0) continue;
-    const overlap = words.filter((w) => tWords.includes(w)).length;
-    if (overlap === 0) continue;
-    const allTokensMatch =
-      words.length <= tWords.length
-        ? words.every((w) => tWords.includes(w))
-        : tWords.every((w) => words.includes(w));
-    if (allTokensMatch || overlap >= 2) {
-      const score = overlap * 10 - Math.abs(tWords.length - words.length);
-      if (score > bestScore) {
-        bestScore = score;
-        best = t;
-      }
-    }
+  if (cleanEmail) {
+    const byEmail = pool.find(
+      (t) =>
+        (t.authEmail || '').toLowerCase() === cleanEmail ||
+        (t.email || '').toLowerCase() === cleanEmail
+    );
+    if (byEmail) return byEmail;
   }
-  return best;
+
+  return matchTechnicianByName(name, pool) || undefined;
 }
 
 export function getEffectiveWorkHours(w: WorkLog): {
@@ -462,6 +427,86 @@ export function getEffectiveWorkHours(w: WorkLog): {
   // Cap single historical anomaly contribution at 10h when computing productive duty hours so AM/PM typos (e.g. 23h) do not distort totals
   const hours = stored > MAX_SINGLE_WORK_HOURS ? MAX_SINGLE_WORK_HOURS : round2(stored);
   return { hours, rawHours, exceeds10h };
+}
+
+function buildWorkChainIndex(allLogs: WorkLog[]) {
+  const supersededIds = new Set<string>();
+  const resolvedRootIds = new Set<string>();
+  for (const item of allLogs) {
+    if (item.parentWorkLogId) supersededIds.add(item.parentWorkLogId);
+    if (item.supersededByLogId) supersededIds.add(item.id);
+    if (item.status === 'Completed' || item.chainResolved) {
+      resolvedRootIds.add(item.rootWorkLogId || item.id);
+    }
+  }
+  return { supersededIds, resolvedRootIds };
+}
+
+export function isActivePendingWorkLog(w: WorkLog, allLogs: WorkLog[]): boolean {
+  if (w.status === 'Completed' || w.supersededByLogId || w.chainResolved) return false;
+  const { supersededIds, resolvedRootIds } = buildWorkChainIndex(allLogs);
+  if (supersededIds.has(w.id)) return false;
+  const rootId = w.rootWorkLogId || w.id;
+  if (resolvedRootIds.has(rootId)) return false;
+  return true;
+}
+
+export function getActivePendingWorkLogs(allLogs: WorkLog[]): WorkLog[] {
+  const { supersededIds, resolvedRootIds } = buildWorkChainIndex(allLogs);
+  return allLogs
+    .filter((w) => {
+      if (w.status === 'Completed' || w.supersededByLogId || w.chainResolved) return false;
+      if (supersededIds.has(w.id)) return false;
+      const rootId = w.rootWorkLogId || w.id;
+      return !resolvedRootIds.has(rootId);
+    })
+    .sort((a, b) => (b.logDate || '').localeCompare(a.logDate || ''));
+}
+
+export function getWorkLogChain(
+  target: WorkLog,
+  allLogs: WorkLog[]
+): {
+  rootId: string;
+  sessions: WorkLog[];
+  totalHours: number;
+  resolved: boolean;
+} {
+  const rootId = target.rootWorkLogId || target.id;
+  const byId = new Map<string, WorkLog>();
+  for (const w of allLogs) byId.set(w.id, w);
+
+  const matched = new Map<string, WorkLog>();
+  for (const w of allLogs) {
+    const wRoot = w.rootWorkLogId || w.id;
+    if (wRoot === rootId || w.id === rootId) {
+      matched.set(w.id, w);
+    }
+  }
+  // Ensure target is present even if passed from a filtered slice
+  matched.set(target.id, target);
+
+  // Walk parent links in case any link did not carry rootWorkLogId
+  let cur: WorkLog | undefined = target;
+  const guard = new Set<string>();
+  while (cur?.parentWorkLogId && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    const parent = byId.get(cur.parentWorkLogId);
+    if (!parent) break;
+    matched.set(parent.id, parent);
+    cur = parent;
+  }
+
+  const sessions = Array.from(matched.values()).sort(
+    (a, b) =>
+      (a.sessionNumber || 1) - (b.sessionNumber || 1) ||
+      (a.logDate || '').localeCompare(b.logDate || '') ||
+      (a.startTime || '').localeCompare(b.startTime || '')
+  );
+  const totalHours = round2(sessions.reduce((sum, s) => sum + getEffectiveWorkHours(s).hours, 0));
+  const resolved = sessions.some((s) => s.status === 'Completed' || Boolean(s.chainResolved));
+
+  return { rootId, sessions, totalHours, resolved };
 }
 
 export function computeTechnicianPerformance(params: {
@@ -612,8 +657,7 @@ export function computeOpenJobAgingBuckets(workLogs: WorkLog[], todayIso: string
     '4-7 days': 0,
     'Over 7 days': 0,
   };
-  for (const w of workLogs) {
-    if (w.status === 'Completed') continue;
+  for (const w of getActivePendingWorkLogs(workLogs)) {
     const age = Math.max(0, isoDayDiff(w.logDate, todayIso));
     if (age <= 1) buckets['0-1 days'] += 1;
     else if (age <= 3) buckets['2-3 days'] += 1;
@@ -624,6 +668,7 @@ export function computeOpenJobAgingBuckets(workLogs: WorkLog[], todayIso: string
 }
 
 export function computeRepeatLocations(workLogs: WorkLog[]) {
+  const activeOpenIds = new Set(getActivePendingWorkLogs(workLogs).map((w) => w.id));
   const map = new Map<
     string,
     { location: string; buildingCode: string; total: number; open: number; hours: number; categories: Map<string, number> }
@@ -640,7 +685,7 @@ export function computeRepeatLocations(workLogs: WorkLog[]) {
       categories: new Map<string, number>(),
     };
     cur.total += 1;
-    if (w.status !== 'Completed') cur.open += 1;
+    if (activeOpenIds.has(w.id)) cur.open += 1;
     cur.hours = round2(cur.hours + getEffectiveWorkHours(w).hours);
     cur.categories.set(w.category, (cur.categories.get(w.category) || 0) + 1);
     map.set(key, cur);
@@ -944,11 +989,12 @@ export function computeBuildingComparison(params: {
     ensure(b.id, b.code, b.name);
   }
 
+  const activeOpenIds = new Set(getActivePendingWorkLogs(params.workLogs).map((w) => w.id));
   for (const w of params.workLogs) {
     const row = ensure(w.buildingId, w.buildingCode, w.buildingName);
     row.totalJobs += 1;
     if (w.status === 'Completed') row.completedJobs += 1;
-    else row.openJobs += 1;
+    else if (activeOpenIds.has(w.id)) row.openJobs += 1;
     row.workHours = round2(row.workHours + getEffectiveWorkHours(w).hours);
   }
 

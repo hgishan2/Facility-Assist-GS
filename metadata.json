@@ -1,0 +1,6 @@
+{
+  "name": "SiteLedger",
+  "description": "Multi-building facility maintenance platform for in-house and AMC contractor PPM reports, before/after repair logs, technician approvals, Excel summaries, and offline field sync.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

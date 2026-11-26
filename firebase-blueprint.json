@@ -1,0 +1,470 @@
+{
+  "entities": {
+    "Building": {
+      "title": "Building",
+      "description": "A physical facility or building managed by the maintenance team.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "address": { "type": "string", "maxLength": 240 },
+        "floorsCount": { "type": "number" },
+        "facilityManager": { "type": "string", "maxLength": 120 },
+        "amcContractors": { "type": "array" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "supervisorEmails": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "code", "name", "address", "floorsCount", "facilityManager",
+        "amcContractors", "status", "supervisorEmails", "memberEmails",
+        "createdByUid", "createdAt", "updatedAt"
+      ]
+    },
+    "Technician": {
+      "title": "Technician",
+      "description": "A facility maintenance technician, supervisor, or admin roster profile.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 160 },
+        "username": { "type": "string", "maxLength": 64 },
+        "authMode": { "type": "string", "enum": ["badge_passcode", "username_password", "google"] },
+        "authEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "authUid": { "type": "string", "maxLength": 128 },
+        "badgeId": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "trade": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "role": { "type": "string", "enum": ["technician", "supervisor", "admin"] },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "assignedBuildingIds": { "type": "array" },
+        "supervisorEmails": { "type": "array" },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "name", "email", "authMode", "authEmail", "authUid", "badgeId",
+        "trade", "phone", "role", "status", "assignedBuildingIds",
+        "supervisorEmails", "createdByUid", "createdAt", "updatedAt"
+      ]
+    },
+    "AccessGrant": {
+      "title": "AccessGrant",
+      "description": "Auth-email-keyed access grant lookup document for zero-leakage RBAC.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 160 },
+        "username": { "type": "string", "maxLength": 64 },
+        "authMode": { "type": "string", "enum": ["badge_passcode", "username_password", "google"] },
+        "authEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "authUid": { "type": "string", "maxLength": 128 },
+        "techId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "badgeId": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "trade": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "role": { "type": "string", "enum": ["technician", "supervisor", "admin"] },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "assignedBuildingIds": { "type": "array" },
+        "supervisorEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "email", "authMode", "authEmail", "authUid", "techId", "name", "badgeId",
+        "trade", "role", "status", "assignedBuildingIds", "supervisorEmails",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "MaintenanceLog": {
+      "title": "MaintenanceLog",
+      "description": "A PPM report (in-house or AMC contractor), repair work order, or upgradation log with PPM due tracking.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "buildingName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "entryType": { "type": "string", "enum": ["ppm_inhouse", "ppm_amc", "repair", "upgradation"] },
+        "discipline": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "assetName": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "assetTag": { "type": "string", "maxLength": 64 },
+        "locationZone": { "type": "string", "maxLength": 120 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "workNotes": { "type": "string", "maxLength": 3000 },
+        "ppmFrequency": { "type": "string", "enum": ["none", "weekly", "monthly", "quarterly", "semi_annual", "annual"] },
+        "nextDueDate": { "type": "string", "maxLength": 20 },
+        "amcContractor": { "type": "string", "maxLength": 140 },
+        "scheduledDate": { "type": "string", "maxLength": 20 },
+        "completedDate": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "outcome": { "type": "string", "enum": ["operational", "minor_observation", "critical_fault"] },
+        "partsUsed": { "type": "string", "maxLength": 500 },
+        "laborHours": { "type": "number" },
+        "beforePhotoIds": { "type": "array" },
+        "afterPhotoIds": { "type": "array" },
+        "scannedReportIds": { "type": "array" },
+        "approvalStatus": { "type": "string", "enum": ["pending_approval", "approved", "revision_requested", "rejected"] },
+        "submittedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "submittedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "submittedByEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "submittedByRole": { "type": "string", "enum": ["technician", "supervisor", "admin"] },
+        "reviewNotes": { "type": "string", "maxLength": 1000 },
+        "reviewedByUid": { "type": "string", "maxLength": 128 },
+        "reviewedByName": { "type": "string", "maxLength": 120 },
+        "reviewedAtIso": { "type": "string", "maxLength": 40 },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "source": { "type": "string", "enum": ["portal", "excel_import", "offline_sync"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "buildingName", "entryType",
+        "discipline", "assetName", "assetTag", "locationZone", "title",
+        "workNotes", "ppmFrequency", "nextDueDate", "amcContractor", "scheduledDate",
+        "completedDate", "outcome", "partsUsed", "laborHours",
+        "beforePhotoIds", "afterPhotoIds", "scannedReportIds",
+        "approvalStatus", "submittedByUid", "submittedByName",
+        "submittedByEmail", "submittedByRole", "reviewNotes",
+        "reviewedByUid", "reviewedByName", "reviewedAtIso",
+        "supervisorEmails", "buildingMemberEmails", "source",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "WorkAttachment": {
+      "title": "WorkAttachment",
+      "description": "Compressed before/after photo or scanned AMC contractor report associated with a maintenance log.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "logId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "kind": { "type": "string", "enum": ["before_photo", "after_photo", "amc_scan"] },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "mimeType": { "type": "string", "enum": ["image/jpeg", "image/webp", "image/png", "application/pdf"] },
+        "dataUrl": { "type": "string", "minLength": 1, "maxLength": 450000 },
+        "caption": { "type": "string", "maxLength": 200 },
+        "uploadedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uploadedByEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "logId", "buildingId", "kind", "fileName", "mimeType",
+        "dataUrl", "caption", "uploadedByUid", "uploadedByEmail",
+        "supervisorEmails", "buildingMemberEmails", "createdAt"
+      ]
+    },
+    "WorkLog": {
+      "title": "WorkLog",
+      "description": "Daily maintenance work order / complaint log covering all technician works.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "buildingName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "logDate": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "shift": { "type": "string", "enum": ["Day", "Night"] },
+        "woNumber": { "type": "string", "maxLength": 40 },
+        "location": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "priority": { "type": "string", "enum": ["Normal", "Urgent", "Emergency"] },
+        "complaint": { "type": "string", "minLength": 1, "maxLength": 1500 },
+        "action": { "type": "string", "maxLength": 1500 },
+        "materials": { "type": "string", "maxLength": 500 },
+        "receivedTime": { "type": "string", "maxLength": 10 },
+        "startTime": { "type": "string", "maxLength": 10 },
+        "finishTime": { "type": "string", "maxLength": 10 },
+        "durationHours": { "type": "number" },
+        "status": { "type": "string", "enum": ["Completed", "Pending", "On Hold"] },
+        "pendingReason": { "type": "string", "maxLength": 500 },
+        "remarks": { "type": "string", "maxLength": 1500 },
+        "technicianUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "technicianName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "technicianEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "supervisorName": { "type": "string", "maxLength": 120 },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "source": { "type": "string", "enum": ["portal", "offline_sync"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "buildingName", "logDate", "shift",
+        "woNumber", "location", "category", "priority", "complaint", "action",
+        "materials", "receivedTime", "startTime", "finishTime", "durationHours",
+        "status", "pendingReason", "remarks", "technicianUid", "technicianName",
+        "technicianEmail", "supervisorName", "supervisorEmails", "buildingMemberEmails",
+        "source", "createdAt", "updatedAt"
+      ]
+    },
+    "OvertimeLog": {
+      "title": "OvertimeLog",
+      "description": "Technician overtime entry categorized by N, WO, PH, or N. Shift.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "buildingName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "otDate": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "fromTime": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "toTime": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "hours": { "type": "number" },
+        "otCategoryType": { "type": "string", "enum": ["N", "WO", "PH", "N. Shift"] },
+        "workType": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "location": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "workDescription": { "type": "string", "minLength": 1, "maxLength": 1500 },
+        "approvalStatus": { "type": "string", "enum": ["pending_approval", "approved", "rejected"] },
+        "reviewNotes": { "type": "string", "maxLength": 500 },
+        "technicianUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "technicianName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "technicianBadgeId": { "type": "string", "maxLength": 32 },
+        "technicianEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "source": { "type": "string", "enum": ["portal", "offline_sync"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "buildingName", "otDate", "fromTime",
+        "toTime", "hours", "otCategoryType", "workType", "location", "workDescription",
+        "approvalStatus", "reviewNotes", "technicianUid", "technicianName",
+        "technicianBadgeId", "technicianEmail", "supervisorEmails", "buildingMemberEmails",
+        "source", "createdAt", "updatedAt"
+      ]
+    },
+    "UtilityMeter": {
+      "title": "UtilityMeter",
+      "description": "Utility meter registry per building for Electricity, Water, Chilled Water, and Gas.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "meterType": { "type": "string", "enum": ["Electricity", "Water", "Chilled Water", "Gas", "Other"] },
+        "area": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "meterNo": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "accountNo": { "type": "string", "maxLength": 64 },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "meterType", "area", "meterNo",
+        "accountNo", "unit", "status", "supervisorEmails", "buildingMemberEmails",
+        "createdByUid", "createdAt", "updatedAt"
+      ]
+    },
+    "UtilityReading": {
+      "title": "UtilityReading",
+      "description": "Dated meter reading entry used to compute daily consumption and detect anomalies.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "meterId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "meterType": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "area": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "meterNo": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "accountNo": { "type": "string", "maxLength": 64 },
+        "readingDate": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "readingValue": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 400 },
+        "technicianUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "technicianName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "technicianEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "source": { "type": "string", "enum": ["portal", "offline_sync"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "meterId", "meterType", "area",
+        "meterNo", "accountNo", "readingDate", "readingValue", "notes",
+        "technicianUid", "technicianName", "technicianEmail", "supervisorEmails",
+        "buildingMemberEmails", "source", "createdAt", "updatedAt"
+      ]
+    },
+    "TenantSchedule": {
+      "title": "TenantSchedule",
+      "description": "Scheduled tenant apartment or common-area maintenance visit assigned to a technician.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "buildingName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "scheduleDate": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "timeSlot": { "type": "string", "maxLength": 40 },
+        "unitOrLocation": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "tenantName": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1500 },
+        "assignedTechUid": { "type": "string", "maxLength": 128 },
+        "assignedTechName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "assignedTechEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "status": { "type": "string", "enum": ["Pending", "In Progress", "Completed", "Cancelled"] },
+        "completionNotes": { "type": "string", "maxLength": 1000 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "source": { "type": "string", "enum": ["portal", "offline_sync"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "buildingName", "scheduleDate",
+        "timeSlot", "unitOrLocation", "tenantName", "category", "description",
+        "assignedTechUid", "assignedTechName", "assignedTechEmail", "status",
+        "completionNotes", "createdByUid", "createdByName", "supervisorEmails",
+        "buildingMemberEmails", "source", "createdAt", "updatedAt"
+      ]
+    },
+    "MaintenanceNotification": {
+      "title": "MaintenanceNotification",
+      "description": "Urgent maintenance alert or operational notice broadcast by a supervisor to a specific building team.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "buildingName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "severity": { "type": "string", "enum": ["critical", "urgent", "advisory"] },
+        "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1500 },
+        "locationZone": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["active", "resolved"] },
+        "acknowledgedByEmails": { "type": "array" },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdByEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "resolvedByName": { "type": "string", "maxLength": 120 },
+        "resolvedAtIso": { "type": "string", "maxLength": 40 },
+        "expiresAtDate": { "type": "string", "maxLength": 20 },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "buildingName", "severity",
+        "category", "title", "message", "locationZone", "status",
+        "acknowledgedByEmails", "createdByUid", "createdByName", "createdByEmail",
+        "resolvedByName", "resolvedAtIso", "expiresAtDate",
+        "supervisorEmails", "buildingMemberEmails", "createdAt", "updatedAt"
+      ]
+    },
+    "Asset": {
+      "title": "Asset",
+      "description": "Registered physical building asset with unique identifier for QR code tagging and instant PPM/maintenance history lookup.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buildingCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "buildingName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "assetTag": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "assetName": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "discipline": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "locationZone": { "type": "string", "maxLength": 120 },
+        "manufacturerModel": { "type": "string", "maxLength": 140 },
+        "serialNumber": { "type": "string", "maxLength": 80 },
+        "ppmFrequency": { "type": "string", "enum": ["none", "weekly", "monthly", "quarterly", "semi_annual", "annual"] },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "supervisorEmails": { "type": "array" },
+        "buildingMemberEmails": { "type": "array" },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "buildingId", "buildingCode", "buildingName", "assetTag",
+        "assetName", "discipline", "locationZone", "manufacturerModel",
+        "serialNumber", "ppmFrequency", "status", "supervisorEmails",
+        "buildingMemberEmails", "createdByUid", "createdAt", "updatedAt"
+      ]
+    },
+    "AdminLock": {
+      "title": "AdminLock",
+      "description": "One-time lock recording that the default admin account has been claimed.",
+      "type": "object",
+      "properties": {
+        "claimed": { "type": "boolean" },
+        "adminUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["claimed", "adminUid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/system_config/{docId}": {
+      "schema": { "$ref": "#/entities/AdminLock" },
+      "description": "One-time admin initialization lock document."
+    },
+    "/buildings/{buildingId}": {
+      "schema": { "$ref": "#/entities/Building" },
+      "description": "Multi-building portfolio configured by supervisors and visible portfolio-wide only to admin."
+    },
+    "/technicians/{techId}": {
+      "schema": { "$ref": "#/entities/Technician" },
+      "description": "Admin-managed supervisors and supervisor-managed technician roster."
+    },
+    "/access_grants/{grantId}": {
+      "schema": { "$ref": "#/entities/AccessGrant" },
+      "description": "Auth-email-keyed authorization grants for role lookup in Firestore rules."
+    },
+    "/assets/{assetId}": {
+      "schema": { "$ref": "#/entities/Asset" },
+      "description": "Building equipment asset registry for QR label generation and instant maintenance log filtering."
+    },
+    "/maintenance_logs/{logId}": {
+      "schema": { "$ref": "#/entities/MaintenanceLog" },
+      "description": "In-house PPM, AMC contractor PPM, repair, and upgradation logs with next due tracking."
+    },
+    "/attachments/{attachmentId}": {
+      "schema": { "$ref": "#/entities/WorkAttachment" },
+      "description": "Compressed before/after photos and scanned AMC contractor report files."
+    },
+    "/work_logs/{workLogId}": {
+      "schema": { "$ref": "#/entities/WorkLog" },
+      "description": "Daily work orders and complaints logged by technicians and supervisors."
+    },
+    "/overtime_logs/{overtimeId}": {
+      "schema": { "$ref": "#/entities/OvertimeLog" },
+      "description": "Technician overtime timesheet logs across N, WO, PH, and N. Shift categories."
+    },
+    "/utility_meters/{meterId}": {
+      "schema": { "$ref": "#/entities/UtilityMeter" },
+      "description": "Building utility meters (Electricity, Water, Chilled Water, Gas)."
+    },
+    "/utility_readings/{readingId}": {
+      "schema": { "$ref": "#/entities/UtilityReading" },
+      "description": "Daily utility meter reading records for consumption and anomaly analysis."
+    },
+    "/tenant_schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/TenantSchedule" },
+      "description": "Scheduled tenant unit and common-area maintenance visits."
+    },
+    "/maintenance_notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/MaintenanceNotification" },
+      "description": "Urgent maintenance alerts broadcast by supervisors to specific building teams."
+    }
+  }
+}

@@ -1,0 +1,1176 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Core Primitives & Identity Helpers
+    // ---------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAuthIdentity() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && (
+          request.auth.token.email_verified == true
+          || request.auth.token.firebase.sign_in_provider == 'password'
+        );
+    }
+
+    function callerEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function callerGrantId() {
+      return callerEmail().replace('[^a-zA-Z0-9_-]', '_');
+    }
+
+    function callerGrantPath() {
+      return /databases/$(database)/documents/access_grants/$(callerGrantId());
+    }
+
+    function hasActiveGrant() {
+      return isAuthIdentity()
+        && exists(callerGrantPath())
+        && get(callerGrantPath()).data.authEmail == callerEmail()
+        && get(callerGrantPath()).data.status == 'active'
+        && (
+          get(callerGrantPath()).data.authUid == ''
+          || get(callerGrantPath()).data.authUid == request.auth.uid
+        );
+    }
+
+    function isRootAdminEmail() {
+      return isAuthIdentity() && callerEmail() == 'admin@siteledger.internal';
+    }
+
+    function isAdmin() {
+      return isRootAdminEmail()
+        || (hasActiveGrant() && get(callerGrantPath()).data.role == 'admin');
+    }
+
+    function isSupervisor() {
+      return isAdmin()
+        || (hasActiveGrant() && get(callerGrantPath()).data.role == 'supervisor');
+    }
+
+    function isTechnician() {
+      return hasActiveGrant() && get(callerGrantPath()).data.role == 'technician';
+    }
+
+    function ownsBuildingDoc(buildingId) {
+      return exists(/databases/$(database)/documents/buildings/$(buildingId))
+        && callerEmail() in get(/databases/$(database)/documents/buildings/$(buildingId)).data.supervisorEmails;
+    }
+
+    function isBuildingMemberDoc(buildingId) {
+      return exists(/databases/$(database)/documents/buildings/$(buildingId))
+        && callerEmail() in get(/databases/$(database)/documents/buildings/$(buildingId)).data.memberEmails;
+    }
+
+    function isValidStringList(arr, maxLen) {
+      return arr is list
+        && arr.size() <= maxLen
+        && (arr.size() == 0 || arr[0] is string);
+    }
+
+    // ---------------------------------------------------------
+    // Entity Validation Blueprints
+    // ---------------------------------------------------------
+    function isValidAdminLock(data) {
+      return data.keys().hasAll(['claimed', 'adminUid', 'createdAt'])
+        && data.keys().hasOnly(['claimed', 'adminUid', 'createdAt'])
+        && data.claimed == true
+        && data.adminUid is string && data.adminUid.size() >= 1 && data.adminUid.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidBuilding(data) {
+      return data.keys().hasAll([
+          'id', 'code', 'name', 'address', 'floorsCount', 'facilityManager',
+          'amcContractors', 'status', 'supervisorEmails', 'memberEmails',
+          'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'code', 'name', 'address', 'floorsCount', 'facilityManager',
+          'amcContractors', 'status', 'supervisorEmails', 'memberEmails',
+          'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 24
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.address is string && data.address.size() <= 240
+        && data.floorsCount is number && data.floorsCount >= 1 && data.floorsCount <= 200
+        && data.facilityManager is string && data.facilityManager.size() <= 120
+        && isValidStringList(data.amcContractors, 20)
+        && data.status in ['active', 'inactive']
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.memberEmails, 50)
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTechnician(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'email', 'authMode', 'authEmail', 'authUid', 'badgeId',
+          'trade', 'phone', 'role', 'status', 'assignedBuildingIds',
+          'supervisorEmails', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'email', 'username', 'authMode', 'authEmail', 'authUid', 'badgeId',
+          'trade', 'phone', 'role', 'status', 'assignedBuildingIds',
+          'supervisorEmails', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.email is string && data.email.size() <= 160
+        && (!('username' in data) || (data.username is string && data.username.size() <= 64))
+        && data.authMode in ['badge_passcode', 'username_password', 'google']
+        && data.authEmail is string && data.authEmail.size() >= 3 && data.authEmail.size() <= 160
+        && data.authUid is string && data.authUid.size() <= 128
+        && data.badgeId is string && data.badgeId.size() >= 1 && data.badgeId.size() <= 32
+        && data.trade is string && data.trade.size() >= 1 && data.trade.size() <= 64
+        && data.phone is string && data.phone.size() <= 40
+        && data.role in ['technician', 'supervisor', 'admin']
+        && data.status in ['active', 'inactive']
+        && isValidStringList(data.assignedBuildingIds, 30)
+        && isValidStringList(data.supervisorEmails, 10)
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAccessGrant(data) {
+      return data.keys().hasAll([
+          'email', 'authMode', 'authEmail', 'authUid', 'techId', 'name', 'badgeId',
+          'trade', 'role', 'status', 'assignedBuildingIds', 'supervisorEmails',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'email', 'username', 'authMode', 'authEmail', 'authUid', 'techId', 'name', 'badgeId',
+          'trade', 'role', 'status', 'assignedBuildingIds', 'supervisorEmails',
+          'createdAt', 'updatedAt'
+        ])
+        && data.email is string && data.email.size() <= 160
+        && (!('username' in data) || (data.username is string && data.username.size() <= 64))
+        && data.authMode in ['badge_passcode', 'username_password', 'google']
+        && data.authEmail is string && data.authEmail.size() >= 3 && data.authEmail.size() <= 160
+        && data.authUid is string && data.authUid.size() <= 128
+        && isValidId(data.techId)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.badgeId is string && data.badgeId.size() >= 1 && data.badgeId.size() <= 32
+        && data.trade is string && data.trade.size() >= 1 && data.trade.size() <= 64
+        && data.role in ['technician', 'supervisor', 'admin']
+        && data.status in ['active', 'inactive']
+        && isValidStringList(data.assignedBuildingIds, 30)
+        && isValidStringList(data.supervisorEmails, 10)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAsset(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'assetTag',
+          'assetName', 'discipline', 'locationZone', 'manufacturerModel',
+          'serialNumber', 'ppmFrequency', 'status', 'supervisorEmails',
+          'buildingMemberEmails', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'assetTag',
+          'assetName', 'discipline', 'locationZone', 'manufacturerModel',
+          'serialNumber', 'ppmFrequency', 'status', 'supervisorEmails',
+          'buildingMemberEmails', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && data.buildingName is string && data.buildingName.size() >= 1 && data.buildingName.size() <= 120
+        && data.assetTag is string && data.assetTag.size() >= 1 && data.assetTag.size() <= 64
+        && data.assetName is string && data.assetName.size() >= 1 && data.assetName.size() <= 140
+        && data.discipline is string && data.discipline.size() >= 1 && data.discipline.size() <= 64
+        && data.locationZone is string && data.locationZone.size() <= 120
+        && data.manufacturerModel is string && data.manufacturerModel.size() <= 140
+        && data.serialNumber is string && data.serialNumber.size() <= 80
+        && data.ppmFrequency in ['none', 'weekly', 'monthly', 'quarterly', 'semi_annual', 'annual']
+        && data.status in ['active', 'inactive']
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMaintenanceLog(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'entryType',
+          'discipline', 'assetName', 'assetTag', 'locationZone', 'title',
+          'workNotes', 'ppmFrequency', 'nextDueDate', 'amcContractor', 'scheduledDate',
+          'completedDate', 'outcome', 'partsUsed', 'laborHours',
+          'beforePhotoIds', 'afterPhotoIds', 'scannedReportIds',
+          'approvalStatus', 'submittedByUid', 'submittedByName',
+          'submittedByEmail', 'submittedByRole', 'reviewNotes',
+          'reviewedByUid', 'reviewedByName', 'reviewedAtIso',
+          'supervisorEmails', 'buildingMemberEmails', 'source',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'entryType',
+          'discipline', 'assetName', 'assetTag', 'locationZone', 'title',
+          'workNotes', 'ppmFrequency', 'nextDueDate', 'amcContractor', 'scheduledDate',
+          'completedDate', 'outcome', 'partsUsed', 'laborHours',
+          'beforePhotoIds', 'afterPhotoIds', 'scannedReportIds',
+          'approvalStatus', 'submittedByUid', 'submittedByName',
+          'submittedByEmail', 'submittedByRole', 'reviewNotes',
+          'reviewedByUid', 'reviewedByName', 'reviewedAtIso',
+          'supervisorEmails', 'buildingMemberEmails', 'source',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && data.buildingName is string && data.buildingName.size() >= 1 && data.buildingName.size() <= 120
+        && data.entryType in ['ppm_inhouse', 'ppm_amc', 'repair', 'upgradation']
+        && data.discipline is string && data.discipline.size() >= 1 && data.discipline.size() <= 64
+        && data.assetName is string && data.assetName.size() >= 1 && data.assetName.size() <= 140
+        && data.assetTag is string && data.assetTag.size() <= 64
+        && data.locationZone is string && data.locationZone.size() <= 120
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 180
+        && data.workNotes is string && data.workNotes.size() <= 3000
+        && data.ppmFrequency in ['none', 'weekly', 'monthly', 'quarterly', 'semi_annual', 'annual']
+        && data.nextDueDate is string && data.nextDueDate.size() <= 20
+        && data.amcContractor is string && data.amcContractor.size() <= 140
+        && data.scheduledDate is string && data.scheduledDate.size() <= 20
+        && data.completedDate is string && data.completedDate.size() >= 1 && data.completedDate.size() <= 20
+        && data.outcome in ['operational', 'minor_observation', 'critical_fault']
+        && data.partsUsed is string && data.partsUsed.size() <= 500
+        && data.laborHours is number && data.laborHours >= 0 && data.laborHours <= 1000
+        && isValidStringList(data.beforePhotoIds, 6)
+        && isValidStringList(data.afterPhotoIds, 6)
+        && isValidStringList(data.scannedReportIds, 6)
+        && data.approvalStatus in ['pending_approval', 'approved', 'revision_requested', 'rejected']
+        && data.submittedByUid is string && data.submittedByUid.size() >= 1 && data.submittedByUid.size() <= 128
+        && data.submittedByName is string && data.submittedByName.size() >= 1 && data.submittedByName.size() <= 120
+        && data.submittedByEmail is string && data.submittedByEmail.size() >= 3 && data.submittedByEmail.size() <= 160
+        && data.submittedByRole in ['technician', 'supervisor', 'admin']
+        && data.reviewNotes is string && data.reviewNotes.size() <= 1000
+        && data.reviewedByUid is string && data.reviewedByUid.size() <= 128
+        && data.reviewedByName is string && data.reviewedByName.size() <= 120
+        && data.reviewedAtIso is string && data.reviewedAtIso.size() <= 40
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.source in ['portal', 'excel_import', 'offline_sync']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttachment(data) {
+      return data.keys().hasAll([
+          'id', 'logId', 'buildingId', 'kind', 'fileName', 'mimeType',
+          'dataUrl', 'caption', 'uploadedByUid', 'uploadedByEmail',
+          'supervisorEmails', 'buildingMemberEmails', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'logId', 'buildingId', 'kind', 'fileName', 'mimeType',
+          'dataUrl', 'caption', 'uploadedByUid', 'uploadedByEmail',
+          'supervisorEmails', 'buildingMemberEmails', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.logId)
+        && isValidId(data.buildingId)
+        && data.kind in ['before_photo', 'after_photo', 'amc_scan']
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 160
+        && data.mimeType in ['image/jpeg', 'image/webp', 'image/png', 'application/pdf']
+        && data.dataUrl is string && data.dataUrl.size() >= 1 && data.dataUrl.size() <= 450000
+        && data.caption is string && data.caption.size() <= 200
+        && data.uploadedByUid is string && data.uploadedByUid.size() >= 1 && data.uploadedByUid.size() <= 128
+        && data.uploadedByEmail is string && data.uploadedByEmail.size() >= 3 && data.uploadedByEmail.size() <= 160
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidWorkLog(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'logDate', 'shift',
+          'woNumber', 'location', 'category', 'priority', 'complaint', 'action',
+          'materials', 'receivedTime', 'startTime', 'finishTime', 'durationHours',
+          'status', 'pendingReason', 'remarks', 'technicianUid', 'technicianName',
+          'technicianEmail', 'supervisorName', 'supervisorEmails', 'buildingMemberEmails',
+          'source', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'logDate', 'shift',
+          'woNumber', 'location', 'category', 'priority', 'complaint', 'action',
+          'materials', 'receivedTime', 'startTime', 'finishTime', 'durationHours',
+          'status', 'pendingReason', 'remarks', 'technicianUid', 'technicianName',
+          'technicianEmail', 'supervisorName', 'supervisorEmails', 'buildingMemberEmails',
+          'source', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && data.buildingName is string && data.buildingName.size() >= 1 && data.buildingName.size() <= 120
+        && data.logDate is string && data.logDate.size() >= 1 && data.logDate.size() <= 20
+        && data.shift in ['Day', 'Night']
+        && data.woNumber is string && data.woNumber.size() <= 40
+        && data.location is string && data.location.size() >= 1 && data.location.size() <= 120
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 64
+        && data.priority in ['Normal', 'Urgent', 'Emergency']
+        && data.complaint is string && data.complaint.size() >= 1 && data.complaint.size() <= 1500
+        && data.action is string && data.action.size() <= 1500
+        && data.materials is string && data.materials.size() <= 500
+        && data.receivedTime is string && data.receivedTime.size() <= 10
+        && data.startTime is string && data.startTime.size() <= 10
+        && data.finishTime is string && data.finishTime.size() <= 10
+        && data.durationHours is number && data.durationHours >= 0 && data.durationHours <= 48
+        && data.status in ['Completed', 'Pending', 'On Hold']
+        && data.pendingReason is string && data.pendingReason.size() <= 500
+        && data.remarks is string && data.remarks.size() <= 1500
+        && data.technicianUid is string && data.technicianUid.size() >= 1 && data.technicianUid.size() <= 128
+        && data.technicianName is string && data.technicianName.size() >= 1 && data.technicianName.size() <= 120
+        && data.technicianEmail is string && data.technicianEmail.size() >= 3 && data.technicianEmail.size() <= 160
+        && data.supervisorName is string && data.supervisorName.size() <= 120
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.source in ['portal', 'offline_sync']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidOvertimeLog(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'otDate', 'fromTime',
+          'toTime', 'hours', 'otCategoryType', 'workType', 'location', 'workDescription',
+          'approvalStatus', 'reviewNotes', 'technicianUid', 'technicianName',
+          'technicianBadgeId', 'technicianEmail', 'supervisorEmails', 'buildingMemberEmails',
+          'source', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'otDate', 'fromTime',
+          'toTime', 'hours', 'otCategoryType', 'workType', 'location', 'workDescription',
+          'approvalStatus', 'reviewNotes', 'technicianUid', 'technicianName',
+          'technicianBadgeId', 'technicianEmail', 'supervisorEmails', 'buildingMemberEmails',
+          'source', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && data.buildingName is string && data.buildingName.size() >= 1 && data.buildingName.size() <= 120
+        && data.otDate is string && data.otDate.size() >= 1 && data.otDate.size() <= 20
+        && data.fromTime is string && data.fromTime.size() >= 1 && data.fromTime.size() <= 10
+        && data.toTime is string && data.toTime.size() >= 1 && data.toTime.size() <= 10
+        && data.hours is number && data.hours >= 0 && data.hours <= 24
+        && data.otCategoryType in ['N', 'WO', 'PH', 'N. Shift']
+        && data.workType is string && data.workType.size() >= 1 && data.workType.size() <= 120
+        && data.location is string && data.location.size() >= 1 && data.location.size() <= 120
+        && data.workDescription is string && data.workDescription.size() >= 1 && data.workDescription.size() <= 1500
+        && data.approvalStatus in ['pending_approval', 'approved', 'rejected']
+        && data.reviewNotes is string && data.reviewNotes.size() <= 500
+        && data.technicianUid is string && data.technicianUid.size() >= 1 && data.technicianUid.size() <= 128
+        && data.technicianName is string && data.technicianName.size() >= 1 && data.technicianName.size() <= 120
+        && data.technicianBadgeId is string && data.technicianBadgeId.size() <= 32
+        && data.technicianEmail is string && data.technicianEmail.size() >= 3 && data.technicianEmail.size() <= 160
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.source in ['portal', 'offline_sync']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUtilityMeter(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'meterType', 'area', 'meterNo',
+          'accountNo', 'unit', 'status', 'supervisorEmails', 'buildingMemberEmails',
+          'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'meterType', 'area', 'meterNo',
+          'accountNo', 'unit', 'status', 'supervisorEmails', 'buildingMemberEmails',
+          'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && data.meterType in ['Electricity', 'Water', 'Chilled Water', 'Gas', 'Other']
+        && data.area is string && data.area.size() >= 1 && data.area.size() <= 120
+        && data.meterNo is string && data.meterNo.size() >= 1 && data.meterNo.size() <= 64
+        && data.accountNo is string && data.accountNo.size() <= 64
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 24
+        && data.status in ['active', 'inactive']
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUtilityReading(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'meterId', 'meterType', 'area',
+          'meterNo', 'accountNo', 'readingDate', 'readingValue', 'notes',
+          'technicianUid', 'technicianName', 'technicianEmail', 'supervisorEmails',
+          'buildingMemberEmails', 'source', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'meterId', 'meterType', 'area',
+          'meterNo', 'accountNo', 'readingDate', 'readingValue', 'notes',
+          'technicianUid', 'technicianName', 'technicianEmail', 'supervisorEmails',
+          'buildingMemberEmails', 'source', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && isValidId(data.meterId)
+        && data.meterType is string && data.meterType.size() >= 1 && data.meterType.size() <= 40
+        && data.area is string && data.area.size() >= 1 && data.area.size() <= 120
+        && data.meterNo is string && data.meterNo.size() >= 1 && data.meterNo.size() <= 64
+        && data.accountNo is string && data.accountNo.size() <= 64
+        && data.readingDate is string && data.readingDate.size() >= 1 && data.readingDate.size() <= 20
+        && data.readingValue is number && data.readingValue >= 0 && data.readingValue <= 999999999
+        && data.notes is string && data.notes.size() <= 400
+        && data.technicianUid is string && data.technicianUid.size() >= 1 && data.technicianUid.size() <= 128
+        && data.technicianName is string && data.technicianName.size() >= 1 && data.technicianName.size() <= 120
+        && data.technicianEmail is string && data.technicianEmail.size() >= 3 && data.technicianEmail.size() <= 160
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.source in ['portal', 'offline_sync']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTenantSchedule(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'scheduleDate',
+          'timeSlot', 'unitOrLocation', 'tenantName', 'category', 'description',
+          'assignedTechUid', 'assignedTechName', 'assignedTechEmail', 'status',
+          'completionNotes', 'createdByUid', 'createdByName', 'supervisorEmails',
+          'buildingMemberEmails', 'source', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'scheduleDate',
+          'timeSlot', 'unitOrLocation', 'tenantName', 'category', 'description',
+          'assignedTechUid', 'assignedTechName', 'assignedTechEmail', 'status',
+          'completionNotes', 'createdByUid', 'createdByName', 'supervisorEmails',
+          'buildingMemberEmails', 'source', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && data.buildingName is string && data.buildingName.size() >= 1 && data.buildingName.size() <= 120
+        && data.scheduleDate is string && data.scheduleDate.size() >= 1 && data.scheduleDate.size() <= 20
+        && data.timeSlot is string && data.timeSlot.size() <= 40
+        && data.unitOrLocation is string && data.unitOrLocation.size() >= 1 && data.unitOrLocation.size() <= 120
+        && data.tenantName is string && data.tenantName.size() <= 120
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 64
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 1500
+        && data.assignedTechUid is string && data.assignedTechUid.size() <= 128
+        && data.assignedTechName is string && data.assignedTechName.size() >= 1 && data.assignedTechName.size() <= 120
+        && data.assignedTechEmail is string && data.assignedTechEmail.size() >= 3 && data.assignedTechEmail.size() <= 160
+        && data.status in ['Pending', 'In Progress', 'Completed', 'Cancelled']
+        && data.completionNotes is string && data.completionNotes.size() <= 1000
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.source in ['portal', 'offline_sync']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMaintenanceNotification(data) {
+      return data.keys().hasAll([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'severity',
+          'category', 'title', 'message', 'locationZone', 'status',
+          'acknowledgedByEmails', 'createdByUid', 'createdByName', 'createdByEmail',
+          'resolvedByName', 'resolvedAtIso', 'expiresAtDate',
+          'supervisorEmails', 'buildingMemberEmails', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buildingId', 'buildingCode', 'buildingName', 'severity',
+          'category', 'title', 'message', 'locationZone', 'status',
+          'acknowledgedByEmails', 'createdByUid', 'createdByName', 'createdByEmail',
+          'resolvedByName', 'resolvedAtIso', 'expiresAtDate',
+          'supervisorEmails', 'buildingMemberEmails', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buildingId)
+        && data.buildingCode is string && data.buildingCode.size() >= 1 && data.buildingCode.size() <= 24
+        && data.buildingName is string && data.buildingName.size() >= 1 && data.buildingName.size() <= 120
+        && data.severity in ['critical', 'urgent', 'advisory']
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 64
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 180
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 1500
+        && data.locationZone is string && data.locationZone.size() <= 120
+        && data.status in ['active', 'resolved']
+        && isValidStringList(data.acknowledgedByEmails, 50)
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120
+        && data.createdByEmail is string && data.createdByEmail.size() >= 3 && data.createdByEmail.size() <= 160
+        && data.resolvedByName is string && data.resolvedByName.size() <= 120
+        && data.resolvedAtIso is string && data.resolvedAtIso.size() <= 40
+        && data.expiresAtDate is string && data.expiresAtDate.size() <= 20
+        && isValidStringList(data.supervisorEmails, 10)
+        && isValidStringList(data.buildingMemberEmails, 50)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // ---------------------------------------------------------
+    // Collection Rules
+    // ---------------------------------------------------------
+    match /system_config/{docId} {
+      allow get: if docId == 'admin_lock' && isSignedIn();
+      allow list: if false;
+      allow create: if docId == 'admin_lock'
+        && isRootAdminEmail()
+        && !exists(/databases/$(database)/documents/system_config/admin_lock)
+        && isValidAdminLock(incoming())
+        && incoming().adminUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /buildings/{buildingId} {
+      allow get: if isValidId(buildingId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && callerEmail() in existing().memberEmails)
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (callerEmail() in resource.data.supervisorEmails || callerEmail() in resource.data.memberEmails));
+      allow create: if isValidId(buildingId)
+        && isSupervisor()
+        && isValidBuilding(incoming())
+        && incoming().id == buildingId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (isAdmin() || callerEmail() in incoming().supervisorEmails);
+      allow update: if isValidId(buildingId)
+        && (
+          isAdmin()
+          || (isSupervisor() && callerEmail() in existing().supervisorEmails && callerEmail() in incoming().supervisorEmails)
+        )
+        && isValidBuilding(incoming())
+        && incoming().id == existing().id
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'code', 'name', 'address', 'floorsCount', 'facilityManager',
+          'amcContractors', 'status', 'supervisorEmails', 'memberEmails', 'updatedAt'
+        ]);
+      allow delete: if isValidId(buildingId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /technicians/{techId} {
+      allow get: if isValidId(techId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && existing().authEmail == callerEmail())
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (callerEmail() in resource.data.supervisorEmails || resource.data.authEmail == callerEmail()));
+      allow create: if isValidId(techId)
+        && isValidTechnician(incoming())
+        && incoming().id == techId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (isSupervisor() && incoming().role == 'technician' && callerEmail() in incoming().supervisorEmails)
+        );
+      allow update: if isValidId(techId)
+        && isValidTechnician(incoming())
+        && incoming().id == existing().id
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isSupervisor()
+            && existing().role == 'technician'
+            && incoming().role == 'technician'
+            && callerEmail() in existing().supervisorEmails
+            && callerEmail() in incoming().supervisorEmails
+          )
+        )
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'email', 'username', 'authMode', 'authEmail', 'authUid', 'badgeId',
+          'trade', 'phone', 'role', 'status', 'assignedBuildingIds',
+          'supervisorEmails', 'updatedAt'
+        ]);
+      allow delete: if isValidId(techId) && (
+        isAdmin()
+        || (isSupervisor() && existing().role == 'technician' && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /access_grants/{grantId} {
+      allow get: if isValidId(grantId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && existing().authEmail == callerEmail())
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (callerEmail() in resource.data.supervisorEmails || resource.data.authEmail == callerEmail()));
+      allow create: if isValidId(grantId)
+        && isValidAccessGrant(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isRootAdminEmail()
+            && grantId == 'admin_siteledger_internal'
+            && incoming().authEmail == 'admin@siteledger.internal'
+            && incoming().role == 'admin'
+            && incoming().authUid == request.auth.uid
+            && !exists(/databases/$(database)/documents/system_config/admin_lock)
+            && existsAfter(/databases/$(database)/documents/system_config/admin_lock)
+          )
+          || isAdmin()
+          || (isSupervisor() && incoming().role == 'technician' && callerEmail() in incoming().supervisorEmails)
+        );
+      allow update: if isValidId(grantId)
+        && isValidAccessGrant(incoming())
+        && incoming().authEmail == existing().authEmail
+        && incoming().techId == existing().techId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isSupervisor()
+            && existing().role == 'technician'
+            && incoming().role == 'technician'
+            && callerEmail() in existing().supervisorEmails
+            && callerEmail() in incoming().supervisorEmails
+          )
+        )
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'email', 'username', 'authMode', 'authUid', 'name', 'badgeId', 'trade', 'role',
+          'status', 'assignedBuildingIds', 'supervisorEmails', 'updatedAt'
+        ]);
+      allow delete: if isValidId(grantId) && (
+        isAdmin()
+        || (isSupervisor() && existing().role == 'technician' && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /assets/{assetId} {
+      allow get: if isValidId(assetId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && callerEmail() in existing().buildingMemberEmails)
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (callerEmail() in resource.data.supervisorEmails || callerEmail() in resource.data.buildingMemberEmails));
+      allow create: if isValidId(assetId)
+        && isSupervisor()
+        && isValidAsset(incoming())
+        && incoming().id == assetId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (
+          isAdmin()
+          || (ownsBuildingDoc(incoming().buildingId) && callerEmail() in incoming().supervisorEmails)
+        );
+      allow update: if isValidId(assetId)
+        && isSupervisor()
+        && isValidAsset(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (callerEmail() in existing().supervisorEmails && callerEmail() in incoming().supervisorEmails)
+        )
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'buildingCode', 'buildingName', 'assetTag', 'assetName', 'discipline',
+          'locationZone', 'manufacturerModel', 'serialNumber', 'ppmFrequency',
+          'status', 'supervisorEmails', 'buildingMemberEmails', 'updatedAt'
+        ]);
+      allow delete: if isValidId(assetId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /maintenance_logs/{logId} {
+      allow get: if isValidId(logId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && (existing().submittedByUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || resource.data.submittedByUid == request.auth.uid
+          || callerEmail() in resource.data.buildingMemberEmails
+        ));
+      allow create: if isValidId(logId)
+        && isAuthIdentity()
+        && isValidMaintenanceLog(incoming())
+        && incoming().id == logId
+        && incoming().submittedByUid == request.auth.uid
+        && incoming().submittedByEmail == callerEmail()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (
+          (
+            isAdmin()
+            && incoming().approvalStatus in ['approved', 'pending_approval']
+            && incoming().submittedByRole in ['supervisor', 'admin']
+          )
+          || (
+            isSupervisor()
+            && !isAdmin()
+            && ownsBuildingDoc(incoming().buildingId)
+            && incoming().approvalStatus in ['approved', 'pending_approval']
+            && incoming().submittedByRole == 'supervisor'
+          )
+          || (
+            isTechnician()
+            && isBuildingMemberDoc(incoming().buildingId)
+            && incoming().approvalStatus == 'pending_approval'
+            && incoming().submittedByRole == 'technician'
+            && incoming().reviewedByUid == ''
+            && incoming().reviewedByName == ''
+            && incoming().reviewNotes == ''
+            && incoming().reviewedAtIso == ''
+          )
+        );
+
+      allow update: if isValidId(logId)
+        && isAuthIdentity()
+        && isValidMaintenanceLog(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().submittedByUid == existing().submittedByUid
+        && incoming().submittedByEmail == existing().submittedByEmail
+        && incoming().submittedByRole == existing().submittedByRole
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails)) && (
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'approvalStatus', 'reviewNotes', 'reviewedByUid', 'reviewedByName', 'reviewedAtIso', 'updatedAt'
+              ])
+              ||
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'buildingCode', 'buildingName', 'entryType', 'discipline', 'assetName',
+                'assetTag', 'locationZone', 'title', 'workNotes', 'ppmFrequency', 'nextDueDate',
+                'amcContractor', 'scheduledDate', 'completedDate', 'outcome',
+                'partsUsed', 'laborHours', 'beforePhotoIds', 'afterPhotoIds',
+                'scannedReportIds', 'approvalStatus', 'reviewNotes', 'reviewedByUid',
+                'reviewedByName', 'reviewedAtIso', 'supervisorEmails',
+                'buildingMemberEmails', 'updatedAt'
+              ])
+            )
+          )
+          ||
+          (
+            isTechnician()
+            && existing().submittedByUid == request.auth.uid
+            && existing().approvalStatus == 'revision_requested'
+            && incoming().approvalStatus == 'pending_approval'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'entryType', 'discipline', 'assetName', 'assetTag', 'locationZone',
+              'title', 'workNotes', 'ppmFrequency', 'nextDueDate', 'amcContractor', 'scheduledDate',
+              'completedDate', 'outcome', 'partsUsed', 'laborHours',
+              'beforePhotoIds', 'afterPhotoIds', 'scannedReportIds',
+              'approvalStatus', 'source', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(logId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /attachments/{attachmentId} {
+      allow get: if isValidId(attachmentId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && (existing().uploadedByUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || resource.data.uploadedByUid == request.auth.uid
+          || callerEmail() in resource.data.buildingMemberEmails
+        ));
+      allow create: if isValidId(attachmentId)
+        && isAuthIdentity()
+        && isValidAttachment(incoming())
+        && incoming().id == attachmentId
+        && incoming().uploadedByUid == request.auth.uid
+        && incoming().uploadedByEmail == callerEmail()
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (
+          isAdmin()
+          || (isSupervisor() && ownsBuildingDoc(incoming().buildingId))
+          || (isTechnician() && isBuildingMemberDoc(incoming().buildingId))
+        );
+      allow update: if false;
+      allow delete: if isValidId(attachmentId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /work_logs/{workLogId} {
+      allow get: if isValidId(workLogId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && (existing().technicianUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || resource.data.technicianUid == request.auth.uid
+          || callerEmail() in resource.data.buildingMemberEmails
+        ));
+      allow create: if isValidId(workLogId)
+        && isAuthIdentity()
+        && isValidWorkLog(incoming())
+        && incoming().id == workLogId
+        && incoming().technicianUid == request.auth.uid
+        && incoming().technicianEmail == callerEmail()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (
+          isAdmin()
+          || (isSupervisor() && ownsBuildingDoc(incoming().buildingId))
+          || (isTechnician() && isBuildingMemberDoc(incoming().buildingId))
+        );
+      allow update: if isValidId(workLogId)
+        && isAuthIdentity()
+        && isValidWorkLog(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().technicianUid == existing().technicianUid
+        && incoming().technicianEmail == existing().technicianEmail
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'logDate', 'shift', 'woNumber', 'location', 'category', 'priority',
+              'complaint', 'action', 'materials', 'receivedTime', 'startTime',
+              'finishTime', 'durationHours', 'status', 'pendingReason', 'remarks',
+              'supervisorName', 'updatedAt'
+            ])
+          )
+          ||
+          (
+            isTechnician()
+            && existing().technicianUid == request.auth.uid
+            && existing().status != 'Completed'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'action', 'finishTime', 'durationHours', 'materials',
+              'pendingReason', 'remarks', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(workLogId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /overtime_logs/{overtimeId} {
+      allow get: if isValidId(overtimeId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && existing().technicianUid == request.auth.uid)
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || resource.data.technicianUid == request.auth.uid
+        ));
+      allow create: if isValidId(overtimeId)
+        && isAuthIdentity()
+        && isValidOvertimeLog(incoming())
+        && incoming().id == overtimeId
+        && incoming().technicianUid == request.auth.uid
+        && incoming().technicianEmail == callerEmail()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (
+          (
+            (isAdmin() || (isSupervisor() && ownsBuildingDoc(incoming().buildingId)))
+            && incoming().approvalStatus in ['approved', 'pending_approval']
+          )
+          ||
+          (
+            isTechnician()
+            && isBuildingMemberDoc(incoming().buildingId)
+            && incoming().approvalStatus == 'pending_approval'
+            && incoming().reviewNotes == ''
+          )
+        );
+      allow update: if isValidId(overtimeId)
+        && (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+        && isValidOvertimeLog(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().technicianUid == existing().technicianUid
+        && incoming().technicianEmail == existing().technicianEmail
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'otDate', 'fromTime', 'toTime', 'hours', 'otCategoryType', 'workType',
+          'location', 'workDescription', 'approvalStatus', 'reviewNotes', 'updatedAt'
+        ]);
+      allow delete: if isValidId(overtimeId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /utility_meters/{meterId} {
+      allow get: if isValidId(meterId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && callerEmail() in existing().buildingMemberEmails)
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || callerEmail() in resource.data.buildingMemberEmails
+        ));
+      allow create: if isValidId(meterId)
+        && isSupervisor()
+        && isValidUtilityMeter(incoming())
+        && incoming().id == meterId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (isAdmin() || ownsBuildingDoc(incoming().buildingId));
+      allow update: if isValidId(meterId)
+        && (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+        && isValidUtilityMeter(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'meterType', 'area', 'meterNo', 'accountNo', 'unit', 'status',
+          'supervisorEmails', 'buildingMemberEmails', 'updatedAt'
+        ]);
+      allow delete: if isValidId(meterId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /utility_readings/{readingId} {
+      allow get: if isValidId(readingId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && (existing().technicianUid == request.auth.uid || callerEmail() in existing().buildingMemberEmails))
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || resource.data.technicianUid == request.auth.uid
+          || callerEmail() in resource.data.buildingMemberEmails
+        ));
+      allow create: if isValidId(readingId)
+        && isAuthIdentity()
+        && isValidUtilityReading(incoming())
+        && incoming().id == readingId
+        && incoming().technicianUid == request.auth.uid
+        && incoming().technicianEmail == callerEmail()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (
+          isAdmin()
+          || (isSupervisor() && ownsBuildingDoc(incoming().buildingId))
+          || (isTechnician() && isBuildingMemberDoc(incoming().buildingId))
+        );
+      allow update: if isValidId(readingId)
+        && (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+        && isValidUtilityReading(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().technicianUid == existing().technicianUid
+        && incoming().technicianEmail == existing().technicianEmail
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'readingDate', 'readingValue', 'notes', 'updatedAt'
+        ]);
+      allow delete: if isValidId(readingId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /tenant_schedules/{scheduleId} {
+      allow get: if isValidId(scheduleId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && (existing().assignedTechEmail == callerEmail() || callerEmail() in existing().buildingMemberEmails))
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || resource.data.assignedTechEmail == callerEmail()
+          || callerEmail() in resource.data.buildingMemberEmails
+        ));
+      allow create: if isValidId(scheduleId)
+        && isAuthIdentity()
+        && isValidTenantSchedule(incoming())
+        && incoming().id == scheduleId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (
+          isAdmin()
+          || (isSupervisor() && ownsBuildingDoc(incoming().buildingId))
+          || (
+            isTechnician()
+            && isBuildingMemberDoc(incoming().buildingId)
+            && incoming().assignedTechEmail == callerEmail()
+          )
+        );
+      allow update: if isValidId(scheduleId)
+        && isAuthIdentity()
+        && isValidTenantSchedule(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'scheduleDate', 'timeSlot', 'unitOrLocation', 'tenantName',
+              'category', 'description', 'assignedTechUid', 'assignedTechName',
+              'assignedTechEmail', 'status', 'completionNotes', 'updatedAt'
+            ])
+          )
+          ||
+          (
+            isTechnician()
+            && (existing().assignedTechEmail == callerEmail() || existing().assignedTechUid == request.auth.uid)
+            && existing().status in ['Pending', 'In Progress']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'completionNotes', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(scheduleId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+
+    match /maintenance_notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+        || (isAuthIdentity() && callerEmail() in existing().buildingMemberEmails)
+      );
+      allow list: if isRootAdminEmail()
+        || (isAuthIdentity() && (
+          callerEmail() in resource.data.supervisorEmails
+          || callerEmail() in resource.data.buildingMemberEmails
+        ));
+      allow create: if isValidId(notificationId)
+        && isSupervisor()
+        && isValidMaintenanceNotification(incoming())
+        && incoming().id == notificationId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdByEmail == callerEmail()
+        && incoming().status == 'active'
+        && incoming().acknowledgedByEmails.size() == 0
+        && incoming().resolvedByName == ''
+        && incoming().resolvedAtIso == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/buildings/$(incoming().buildingId))
+        && (isAdmin() || ownsBuildingDoc(incoming().buildingId));
+      allow update: if isValidId(notificationId)
+        && isAuthIdentity()
+        && isValidMaintenanceNotification(incoming())
+        && incoming().id == existing().id
+        && incoming().buildingId == existing().buildingId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdByEmail == existing().createdByEmail
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            (isAdmin() || (isSupervisor() && callerEmail() in existing().supervisorEmails))
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'buildingCode', 'buildingName', 'severity', 'category', 'title',
+              'message', 'locationZone', 'status', 'resolvedByName', 'resolvedAtIso',
+              'expiresAtDate', 'supervisorEmails', 'buildingMemberEmails', 'updatedAt'
+            ])
+          )
+          ||
+          (
+            (
+              isAdmin()
+              || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+              || (isTechnician() && callerEmail() in existing().buildingMemberEmails)
+            )
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['acknowledgedByEmails', 'updatedAt'])
+            && incoming().acknowledgedByEmails.hasAll(existing().acknowledgedByEmails)
+            && incoming().acknowledgedByEmails.toSet().difference(existing().acknowledgedByEmails.toSet()).hasOnly([callerEmail()])
+          )
+        );
+      allow delete: if isValidId(notificationId) && (
+        isAdmin()
+        || (isSupervisor() && callerEmail() in existing().supervisorEmails)
+      );
+    }
+  }
+}

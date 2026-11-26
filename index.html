@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Facility Assist — Facility Maintenance &amp; PPM Operations</title>
+    <meta
+      name="description"
+      content="All-in-one multi-building facility maintenance platform for in-house and AMC contractor PPM reports, before/after repair & upgrade logs, daily work orders, overtime, utility meter readings, tenant schedules, Excel summaries, and offline field sync."
+    />
+    <meta name="author" content="Ishan Madhushanka" />
+    <meta property="og:title" content="Facility Assist — Facility Maintenance & PPM Operations" />
+    <meta
+      property="og:description"
+      content="All-in-one multi-building facility maintenance platform for in-house and AMC contractor PPM reports, before/after repair & upgrade logs, daily work orders, overtime, utility meter readings, tenant schedules, Excel summaries, and offline field sync."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Facility Assist" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var m = localStorage.getItem('siteledger_theme_mode');
+          var a = localStorage.getItem('siteledger_theme_accent');
+          var dark = m === 'dark' || (!m && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) document.documentElement.classList.add('dark');
+          if (a === 'royal' || a === 'amber' || a === 'emerald') {
+            document.documentElement.dataset.accent = a;
+          } else {
+            document.documentElement.dataset.accent = 'royal';
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased selection:bg-brand-100 selection:text-brand-900 dark:selection:bg-brand-900/60 dark:selection:text-brand-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
